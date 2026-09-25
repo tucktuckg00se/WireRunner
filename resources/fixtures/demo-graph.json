@@ -1,0 +1,36 @@
+{
+  "version": 1,
+  "remoteName": "pipewire-0",
+  "remoteVersion": "1.6.9 demo",
+  "nodes": [
+    {"id": 10, "name": "Firefox", "technicalName": "Firefox", "stableId": "app:firefox", "mediaClass": "Stream/Output/Audio", "media": "audio", "state": "running"},
+    {"id": 11, "name": "Spotify", "technicalName": "Spotify", "stableId": "app:spotify", "mediaClass": "Stream/Output/Audio", "media": "audio", "state": "running"},
+    {"id": 20, "name": "Stream Mix", "technicalName": "stream_mix", "stableId": "virtual:stream-mix", "mediaClass": "Audio/Source/Virtual", "media": "audio", "state": "running"},
+    {"id": 30, "name": "Built-in headphones", "technicalName": "alsa_output.pci", "stableId": "device:headphones", "mediaClass": "Audio/Sink", "media": "audio", "state": "idle"},
+    {"id": 31, "name": "Scarlett 18i20", "technicalName": "alsa_output.usb-focusrite", "stableId": "device:scarlett", "mediaClass": "Audio/Sink", "media": "audio", "state": "running"},
+    {"id": 40, "name": "USB camera", "technicalName": "v4l2_input.usb-camera", "stableId": "camera:usb", "mediaClass": "Video/Source", "media": "video", "state": "running"},
+    {"id": 41, "name": "OBS Studio", "technicalName": "obs-video-input", "stableId": "app:obs", "mediaClass": "Stream/Input/Video", "media": "video", "state": "running"},
+    {"id": 50, "name": "MIDI keyboard", "technicalName": "alsa_midi.keyboard", "stableId": "midi:keyboard", "mediaClass": "Midi/Source", "media": "midi", "state": "idle"},
+    {"id": 51, "name": "Bitwig Studio", "technicalName": "bitwig-midi-in", "stableId": "app:bitwig", "mediaClass": "Stream/Input/Midi", "media": "midi", "state": "idle"}
+  ],
+  "ports": [
+    {"id": 100, "nodeId": 10, "name": "stereo out", "channel": "FL,FR", "direction": "output", "media": "audio"},
+    {"id": 101, "nodeId": 11, "name": "stereo out", "channel": "FL,FR", "direction": "output", "media": "audio"},
+    {"id": 102, "nodeId": 20, "name": "mix in", "channel": "FL,FR", "direction": "input", "media": "audio"},
+    {"id": 103, "nodeId": 20, "name": "virtual mic", "channel": "FL,FR", "direction": "output", "media": "audio"},
+    {"id": 104, "nodeId": 30, "name": "stereo in", "channel": "FL,FR", "direction": "input", "media": "audio"},
+    {"id": 105, "nodeId": 31, "name": "playback 1–2", "channel": "FL,FR", "direction": "input", "media": "audio"},
+    {"id": 110, "nodeId": 40, "name": "video out", "channel": "", "direction": "output", "media": "video"},
+    {"id": 111, "nodeId": 41, "name": "camera input", "channel": "", "direction": "input", "media": "video"},
+    {"id": 120, "nodeId": 50, "name": "events", "channel": "", "direction": "output", "media": "midi"},
+    {"id": 121, "nodeId": 51, "name": "midi in", "channel": "", "direction": "input", "media": "midi"}
+  ],
+  "links": [
+    {"id": 200, "outputNodeId": 10, "outputPortId": 100, "inputNodeId": 30, "inputPortId": 104, "state": "active", "media": "audio"},
+    {"id": 201, "outputNodeId": 10, "outputPortId": 100, "inputNodeId": 31, "inputPortId": 105, "state": "active", "media": "audio"},
+    {"id": 202, "outputNodeId": 10, "outputPortId": 100, "inputNodeId": 20, "inputPortId": 102, "state": "active", "media": "audio"},
+    {"id": 203, "outputNodeId": 11, "outputPortId": 101, "inputNodeId": 30, "inputPortId": 104, "state": "active", "media": "audio"},
+    {"id": 210, "outputNodeId": 40, "outputPortId": 110, "inputNodeId": 41, "inputPortId": 111, "state": "active", "media": "video"},
+    {"id": 220, "outputNodeId": 50, "outputPortId": 120, "inputNodeId": 51, "inputPortId": 121, "state": "paused", "media": "midi"}
+  ]
+}

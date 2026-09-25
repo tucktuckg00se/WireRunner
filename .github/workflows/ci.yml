@@ -1,0 +1,38 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    container: archlinux:base-devel
+    steps:
+      - name: Install dependencies
+        run: >-
+          pacman -Syu --noconfirm
+          cmake ninja pkgconf
+          qt6-base qt6-declarative
+          wireplumber
+          appstream desktop-file-utils
+
+      - uses: actions/checkout@v4
+
+      - name: Configure
+        run: cmake --preset dev -DWIRERUNNER_WARNINGS_AS_ERRORS=ON
+
+      - name: Build
+        run: cmake --build --preset dev
+
+      - name: Test
+        run: ctest --preset dev
+
+      - name: Validate desktop metadata
+        run: |
+          desktop-file-validate packaging/io.github.tucktuckg00se.WireRunner.desktop
+          appstreamcli validate --no-net packaging/io.github.tucktuckg00se.WireRunner.metainfo.xml

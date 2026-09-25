@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>io.github.tucktuckg00se.WireRunner</id>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>GPL-3.0-or-later</project_license>
+  <name>WireRunner</name>
+  <summary>Understand and control the PipeWire media graph</summary>
+  <description>
+    <p>
+      WireRunner presents audio, video, and MIDI objects in one direct graph so
+      people can understand the current signal path and make intentional changes.
+    </p>
+  </description>
+  <launchable type="desktop-id">io.github.tucktuckg00se.WireRunner.desktop</launchable>
+  <url type="homepage">https://github.com/tucktuckg00se/WireRunner</url>
+  <developer id="io.github.tucktuckg00se">
+    <name>Tucker</name>
+  </developer>
+  <content_rating type="oars-1.1"/>
+  <releases>
+    <release version="0.1.0" date="2026-09-24">
+      <description><p>Initial read-only graph milestone.</p></description>
+    </release>
+  </releases>
+</component>

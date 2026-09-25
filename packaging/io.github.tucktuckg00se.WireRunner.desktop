@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=WireRunner
+Comment=See and control the PipeWire media graph
+Exec=wirerunner
+Icon=io.github.tucktuckg00se.WireRunner
+Terminal=false
+Categories=AudioVideo;Audio;Video;Qt;
+Keywords=PipeWire;WirePlumber;Audio;Video;MIDI;Routing;
+StartupWMClass=io.github.tucktuckg00se.WireRunner
