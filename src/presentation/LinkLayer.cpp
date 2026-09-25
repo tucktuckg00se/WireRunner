@@ -3,11 +3,10 @@
 
 #include <QLineF>
 #include <QMouseEvent>
-#include <QSGFlatColorMaterial>
-#include <QSGGeometryNode>
+#include <QPainter>
+#include <QPainterPath>
 #include <algorithm>
 #include <cmath>
-#include <unordered_map>
 
 namespace wirerunner {
 namespace {
@@ -18,68 +17,91 @@ QPointF bezier(QPointF a, QPointF b, double t) {
   const double u = 1.0 - t;
   return a * (u*u*u) + c1 * (3*u*u*t) + c2 * (3*u*t*t) + b * (t*t*t);
 }
-QColor linkColor(const QString &media) {
-  if (media == "video") return QColor("#e9bb69");
-  if (media == "midi") return QColor("#b49cff");
-  return QColor("#83dc9a");
+QPainterPath linkPath(QPointF a, QPointF b) {
+  const double handle = std::max(70.0, std::abs(b.x() - a.x()) * 0.42);
+  QPainterPath path(a);
+  path.cubicTo({a.x() + handle, a.y()}, {b.x() - handle, b.y()}, b);
+  return path;
 }
-double segmentDistance(QPointF p, QPointF a, QPointF b) {
-  const QPointF ab = b-a;
-  const double length = QPointF::dotProduct(ab,ab);
-  if (length == 0.0) return QLineF(p,a).length();
-  const double t = std::clamp(QPointF::dotProduct(p-a,ab)/length,0.0,1.0);
-  return QLineF(p,a+ab*t).length();
+QColor linkColor(const QString &media, bool focused) {
+  QColor color = media == QStringLiteral("video") ? QColor("#e6b765")
+    : media == QStringLiteral("midi") ? QColor("#a893f5") : QColor("#68d18b");
+  color.setAlphaF(focused ? 0.86F : 0.12F);
+  return color;
+}
+double segmentDistance(QPointF point, QPointF a, QPointF b) {
+  const QPointF segment = b-a;
+  const double length = QPointF::dotProduct(segment,segment);
+  if (length == 0.0) return QLineF(point,a).length();
+  const double position = std::clamp(QPointF::dotProduct(point-a,segment)/length,0.0,1.0);
+  return QLineF(point,a+segment*position).length();
+}
+QHash<QString, QPointF> anchorPoints(const QVariantList &anchors) {
+  QHash<QString,QPointF> points;
+  for(const auto &value:anchors){const auto anchor=value.toMap();points.insert(anchor.value("key").toString(),{anchor.value("x").toDouble(),anchor.value("y").toDouble()});}
+  return points;
 }
 }
 
-LinkLayer::LinkLayer(QQuickItem *parent) : QQuickItem(parent) {
-  setFlag(ItemHasContents, true);
+LinkLayer::LinkLayer(QQuickItem *parent) : QQuickPaintedItem(parent) {
+  setAntialiasing(true);
   setAcceptedMouseButtons(Qt::LeftButton);
 }
-void LinkLayer::setNodes(QVariantList value) { nodes_=std::move(value); emit nodesChanged(); update(); }
+void LinkLayer::setPortAnchors(QVariantList value) { portAnchors_=std::move(value); emit portAnchorsChanged(); update(); }
 void LinkLayer::setLinks(QVariantList value) { links_=std::move(value); emit linksChanged(); update(); }
+void LinkLayer::setBlockers(QVariantList value) { blockers_=std::move(value); emit blockersChanged(); update(); }
+void LinkLayer::setViewScale(double value) { if(qFuzzyCompare(viewScale_,value))return;viewScale_=value;emit viewTransformChanged();update(); }
+void LinkLayer::setContentX(double value) { if(qFuzzyCompare(contentX_,value))return;contentX_=value;emit viewTransformChanged();update(); }
+void LinkLayer::setContentY(double value) { if(qFuzzyCompare(contentY_,value))return;contentY_=value;emit viewTransformChanged();update(); }
 void LinkLayer::setMediaFilter(QString value) { if(mediaFilter_==value)return; mediaFilter_=std::move(value); emit mediaFilterChanged(); update(); }
-void LinkLayer::setSelectedLinkId(quint32 value) { if(selectedLinkId_==value)return; selectedLinkId_=value; emit selectedLinkIdChanged(); update(); }
+void LinkLayer::setSelectedKey(QString value) { if(selectedKey_==value)return; selectedKey_=std::move(value); emit selectedKeyChanged(); update(); }
 
-QSGNode *LinkLayer::updatePaintNode(QSGNode *oldNode, UpdatePaintNodeData *) {
-  delete oldNode;
-  auto *root = new QSGNode;
-  std::unordered_map<quint32,QPointF> endpoints;
-  for (const auto &value : nodes_) {
-    const auto node=value.toMap();
-    const auto id=node.value("id").toUInt();
-    endpoints[id]=QPointF(node.value("x").toDouble(),node.value("y").toDouble()+56.0);
+void LinkLayer::paint(QPainter *painter) {
+  const auto graphPoints = anchorPoints(portAnchors_);
+  QHash<QString,QPointF> points;
+  for (auto point = graphPoints.cbegin(); point != graphPoints.cend(); ++point)
+    points.insert(point.key(), {point->x()*viewScale_-contentX_, point->y()*viewScale_-contentY_});
+  painter->setRenderHint(QPainter::Antialiasing, true);
+  QRegion visibleRegion(QRect(0, 0, static_cast<int>(width()), static_cast<int>(height())));
+  for (const auto &value : blockers_) {
+    const auto blocker = value.toMap();
+    const QRect rect(static_cast<int>(blocker.value("x").toDouble()*viewScale_-contentX_),
+      static_cast<int>(blocker.value("y").toDouble()*viewScale_-contentY_),
+      static_cast<int>(blocker.value("width").toDouble()*viewScale_),
+      static_cast<int>(blocker.value("height").toDouble()*viewScale_));
+    visibleRegion -= rect.adjusted(1, 1, -1, -1);
   }
+  painter->setClipRegion(visibleRegion);
   for (const auto &value : links_) {
     const auto link=value.toMap();
     const auto media=link.value("media").toString();
     if(mediaFilter_!="all" && mediaFilter_!=media) continue;
-    const auto out=link.value("outputNodeId").toUInt(), in=link.value("inputNodeId").toUInt();
-    if(!endpoints.contains(out)||!endpoints.contains(in)) continue;
-    QPointF a=endpoints[out]+QPointF(220.0,0), b=endpoints[in];
-    constexpr int segments=32;
-    auto *geometry=new QSGGeometry(QSGGeometry::defaultAttributes_Point2D(),segments+1);
-    geometry->setDrawingMode(QSGGeometry::DrawLineStrip);
-    geometry->setLineWidth(link.value("id").toUInt()==selectedLinkId_?4.0F:2.0F);
-    auto *vertices=geometry->vertexDataAsPoint2D();
-    for(int i=0;i<=segments;++i){const auto p=bezier(a,b,static_cast<double>(i)/segments);vertices[i].set(static_cast<float>(p.x()),static_cast<float>(p.y()));}
-    auto *node=new QSGGeometryNode; node->setGeometry(geometry); node->setFlag(QSGNode::OwnsGeometry);
-    auto *material=new QSGFlatColorMaterial; material->setColor(linkColor(media));
-    node->setMaterial(material); node->setFlag(QSGNode::OwnsMaterial); root->appendChildNode(node);
+    const auto output=link.value("outputAnchorKey").toString();
+    const auto input=link.value("inputAnchorKey").toString();
+    if(!points.contains(output)||!points.contains(input)) continue;
+    const QRectF bounds(points.value(output),points.value(input));
+    if (!bounds.normalized().adjusted(-100.0,-100.0,100.0,100.0).intersects({0.0,0.0,width(),height()})) continue;
+    QPen pen(linkColor(media,link.value("focused").toBool()),
+      link.value("key").toString()==selectedKey_?4.0:2.0,Qt::SolidLine,Qt::RoundCap,Qt::RoundJoin);
+    painter->setPen(pen);
+    painter->drawPath(linkPath(points.value(output),points.value(input)));
   }
-  return root;
 }
 
 void LinkLayer::mousePressEvent(QMouseEvent *event) {
-  std::unordered_map<quint32,QPointF> endpoints;
-  for(const auto &value:nodes_){const auto n=value.toMap();endpoints[n.value("id").toUInt()]=QPointF(n.value("x").toDouble(),n.value("y").toDouble()+56.0);}
-  double best=10.0; QVariantMap chosen;
-  for(const auto &value:links_){const auto l=value.toMap();const auto media=l.value("media").toString();if(mediaFilter_!="all"&&mediaFilter_!=media)continue;
-    const auto out=l.value("outputNodeId").toUInt(),in=l.value("inputNodeId").toUInt();if(!endpoints.contains(out)||!endpoints.contains(in))continue;
-    const QPointF a=endpoints[out]+QPointF(220,0),b=endpoints[in];QPointF prev=a;
-    for(int i=1;i<=32;++i){const auto next=bezier(a,b,static_cast<double>(i)/32.0);const auto distance=segmentDistance(event->position(),prev,next);if(distance<best){best=distance;chosen=l;}prev=next;}
+  const auto graphPoints = anchorPoints(portAnchors_);
+  QHash<QString,QPointF> points;
+  for (auto point = graphPoints.cbegin(); point != graphPoints.cend(); ++point)
+    points.insert(point.key(), {point->x()*viewScale_-contentX_, point->y()*viewScale_-contentY_});
+  double best=10.0; QString chosen;
+  for(const auto &value:links_){
+    const auto link=value.toMap();const auto media=link.value("media").toString();if(mediaFilter_!="all"&&mediaFilter_!=media)continue;
+    const auto output=link.value("outputAnchorKey").toString(),input=link.value("inputAnchorKey").toString();if(!points.contains(output)||!points.contains(input))continue;
+    const auto a=points.value(output),b=points.value(input);QPointF previous=a;
+    for(int index=1;index<=32;++index){const auto next=bezier(a,b,static_cast<double>(index)/32.0);const auto distance=segmentDistance(event->position(),previous,next);if(distance<best){best=distance;chosen=link.value("key").toString();}previous=next;}
   }
-  if(!chosen.isEmpty()){setSelectedLinkId(chosen.value("id").toUInt());emit linkActivated(selectedLinkId_,chosen.value("fromName").toString(),chosen.value("toName").toString(),chosen.value("media").toString(),chosen.value("state").toString());event->accept();return;}
+  if(!chosen.isEmpty()){setSelectedKey(chosen);emit linkActivated(chosen);event->accept();return;}
   event->ignore();
 }
+
 } // namespace wirerunner

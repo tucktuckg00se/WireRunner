@@ -11,6 +11,7 @@
 #include <QQmlApplicationEngine>
 #include <QQmlContext>
 #include <QTimer>
+#include <QQuickWindow>
 
 using namespace wirerunner;
 
@@ -18,7 +19,7 @@ int main(int argc, char **argv) {
   QGuiApplication app(argc, argv);
   QGuiApplication::setOrganizationDomain(QStringLiteral("io.github.tucktuckg00se"));
   QGuiApplication::setApplicationName(QStringLiteral("WireRunner"));
-  QGuiApplication::setApplicationVersion(QStringLiteral("0.1.0"));
+  QGuiApplication::setApplicationVersion(QStringLiteral("0.2.0"));
   QGuiApplication::setDesktopFileName(QStringLiteral("io.github.tucktuckg00se.WireRunner"));
 
   QCommandLineParser parser;
@@ -29,9 +30,12 @@ int main(int argc, char **argv) {
   QCommandLineOption fixture(QStringLiteral("fixture"), QStringLiteral("Load a graph fixture"), QStringLiteral("path"));
   QCommandLineOption quitAfter(QStringLiteral("quit-after"),
     QStringLiteral("Exit after a number of milliseconds (for automated checks)"), QStringLiteral("milliseconds"));
+  QCommandLineOption screenshot(QStringLiteral("screenshot"),
+    QStringLiteral("Save an offscreen screenshot and exit"), QStringLiteral("path"));
   parser.addOption(demo);
   parser.addOption(fixture);
   parser.addOption(quitAfter);
+  parser.addOption(screenshot);
   parser.process(app);
 
   wp_init(WP_INIT_ALL);
@@ -53,6 +57,13 @@ int main(int argc, char **argv) {
         bool valid = false;
         const int milliseconds = parser.value(quitAfter).toInt(&valid);
         if (valid && milliseconds >= 0) QTimer::singleShot(milliseconds, &app, &QCoreApplication::quit);
+      }
+      if (parser.isSet(screenshot)) {
+        QTimer::singleShot(500, &app, [&app, &engine, path = parser.value(screenshot)] {
+          if (auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().constFirst()))
+            window->grabWindow().save(path);
+          app.quit();
+        });
       }
       result = app.exec();
     }

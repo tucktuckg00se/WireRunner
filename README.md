@@ -4,13 +4,15 @@ WireRunner is a native PipeWire and WirePlumber control surface for Linux. It
 presents the real multimedia graph as one understandable workspace for audio,
 video, and MIDI.
 
-The project is in its first implementation milestone: a read-only live graph
-viewer built with C++23 and Qt Quick 6.
+The current milestone is a read-only but fully navigable graph foundation built
+with C++23 and Qt Quick 6.
 
-The current slice reads clients, devices, nodes, ports, and links directly from
-libwireplumber on a dedicated GLib thread. The UI receives immutable snapshots,
-so the backend remains independent from Qt and is ready for the validated command
-layer planned for later milestones.
+WireRunner reads clients, devices, nodes, ports, and links directly from
+libwireplumber on a dedicated GLib thread. It composes related objects into one
+card, expands real ports in place, supports pan, zoom, search, path focus, and
+card arrangement, and remembers stable layout without confusing it with media
+state. The UI receives immutable snapshots, leaving the backend ready for the
+validated command layer planned for later milestones.
 
 ## Documentation
 

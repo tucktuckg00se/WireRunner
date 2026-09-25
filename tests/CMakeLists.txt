@@ -13,3 +13,14 @@ set_tests_properties(qml_demo_smoke qml_backend_startup_smoke PROPERTIES
   ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QT_QUICK_BACKEND=software;QT_FATAL_WARNINGS=1"
   TIMEOUT 10
 )
+
+find_program(WIRERUNNER_QT6_QMLTESTRUNNER qmltestrunner
+  HINTS /usr/lib/qt6/bin /usr/lib64/qt6/bin /usr/local/lib/qt6/bin
+  NO_DEFAULT_PATH REQUIRED)
+add_test(NAME qml_interactions
+  COMMAND ${WIRERUNNER_QT6_QMLTESTRUNNER} -input ${CMAKE_CURRENT_SOURCE_DIR}/qml
+)
+set_tests_properties(qml_interactions PROPERTIES
+  ENVIRONMENT "QT_QPA_PLATFORM=offscreen;QT_QUICK_BACKEND=software"
+  TIMEOUT 15
+)

@@ -18,6 +18,9 @@
   </developer>
   <content_rating type="oars-1.1"/>
   <releases>
+    <release version="0.2.0" date="2026-09-24">
+      <description><p>Adds the composed, navigable graph foundation with stable layout.</p></description>
+    </release>
     <release version="0.1.0" date="2026-09-24">
       <description><p>Initial read-only graph milestone.</p></description>
     </release>

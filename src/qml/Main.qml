@@ -6,167 +6,237 @@ import WireRunner 1.0
 
 ApplicationWindow {
     id: window
-    width: 1280
-    height: 800
-    minimumWidth: 900
-    minimumHeight: 600
+    width: 1360
+    height: 820
+    minimumWidth: 920
+    minimumHeight: 620
     visible: true
     title: "WireRunner"
-    color: "#111418"
-    property string mediaFilter: "all"
-    property string searchText: ""
-    property var visibleNodes: graph.nodes.filter(function(node) {
-        return (mediaFilter === "all" || node.media === mediaFilter)
-            && (searchText === "" || node.name.toLowerCase().includes(searchText)
-                || node.technicalName.toLowerCase().includes(searchText))
-    })
-    property var selected: ({ kind: "node", name: "Select an object", detail: "Click a node or link on the graph", media: "" })
+    color: "#12161a"
 
     function mediaColor(media) {
-        if (media === "video") return "#e9bb69"
-        if (media === "midi") return "#b49cff"
-        if (media === "audio") return "#83dc9a"
-        return "#8e98a9"
+        if (media === "video") return "#e6b765"
+        if (media === "midi") return "#a893f5"
+        if (media === "audio") return "#68d18b"
+        return "#89949e"
     }
 
     header: Rectangle {
         height: 54
-        color: "#1c2026"
-        border.color: "#303741"
+        color: "#1b2025"
+        border.color: "#343e47"
         RowLayout {
             anchors.fill: parent
             anchors.leftMargin: 18
-            anchors.rightMargin: 14
-            spacing: 14
-            Rectangle { width: 18; height: 18; radius: 9; color: "transparent"; border.width: 2; border.color: "#68c9cf" }
-            Label { text: "WireRunner"; color: "#edf1f6"; font.pixelSize: 15; font.bold: true }
-            Rectangle { width: 1; Layout.fillHeight: true; color: "#343b45" }
-            Label { text: graph.statusText; color: graph.connected ? "#a9dcb5" : "#e9bb69"; font.pixelSize: 11 }
+            anchors.rightMargin: 16
+            spacing: 13
+            Item {
+                width: 20; height: 20
+                Rectangle { x: 1; y: 3; width: 8; height: 8; radius: 4; color: "transparent"; border.width: 2; border.color: "#68d18b" }
+                Rectangle { x: 11; y: 9; width: 8; height: 8; radius: 4; color: "transparent"; border.width: 2; border.color: "#a893f5" }
+                Rectangle { x: 8; y: 7; width: 5; height: 2; rotation: 35; color: "#7d8993" }
+            }
+            Text { text: "WireRunner"; color: "#edf0f2"; font.pixelSize: 15; font.weight: Font.DemiBold }
+            Rectangle { width: 1; Layout.fillHeight: true; color: "#354049" }
+            Rectangle { width: 7; height: 7; radius: 4; color: graph.connected ? "#68d18b" : "#e6b765" }
+            Text { text: graph.statusText; color: "#aab4bc"; font.pixelSize: 10 }
             Item { Layout.fillWidth: true }
-            Label { text: graph.remoteSummary; color: "#8f9aa8"; font.pixelSize: 10 }
-            Label { text: graph.nodeCount + " nodes  ·  " + graph.linkCount + " links"; color: "#aeb7c2"; font.pixelSize: 10 }
+            Text { text: graph.remoteSummary; color: "#77838d"; font.pixelSize: 9 }
+            Text { text: graph.cardCount + " objects  /  " + graph.linkCount + " links"; color: "#aab4bc"; font.pixelSize: 10 }
         }
     }
 
     ColumnLayout {
         anchors.fill: parent
         spacing: 0
+
         Rectangle {
             Layout.fillWidth: true
-            Layout.preferredHeight: 44
-            color: "#171b20"
-            border.color: "#333b45"
+            Layout.preferredHeight: 48
+            color: "#171c20"
+            border.color: "#343e47"
             RowLayout {
-                anchors.fill: parent; anchors.margins: 7; spacing: 6
+                anchors.fill: parent
+                anchors.leftMargin: 12
+                anchors.rightMargin: 12
+                spacing: 6
                 Repeater {
                     model: ["all", "audio", "video", "midi"]
                     delegate: Button {
                         required property string modelData
                         text: modelData === "all" ? "All media" : modelData.charAt(0).toUpperCase() + modelData.slice(1)
-                        checked: window.mediaFilter === modelData
+                        checked: graph.mediaFilter === modelData
                         checkable: true
-                        onClicked: window.mediaFilter = modelData
+                        onClicked: graph.mediaFilter = modelData
                     }
+                }
+                Rectangle { width: 1; Layout.fillHeight: true; color: "#343e47"; Layout.leftMargin: 6; Layout.rightMargin: 6 }
+                Button {
+                    visible: graph.focusActive
+                    text: "Show full graph"
+                    onClicked: graph.clearFocus()
                 }
                 Item { Layout.fillWidth: true }
                 TextField {
-                    Layout.preferredWidth: 240
-                    placeholderText: "Find on graph…"
-                    onTextChanged: window.searchText = text.toLowerCase()
+                    id: searchField
+                    Layout.preferredWidth: 250
+                    placeholderText: "Find an object"
+                    selectByMouse: true
+                    onAccepted: {
+                        const result = graph.findCard(text)
+                        if (result.key !== undefined) viewport.reveal(result)
+                    }
+                    Accessible.description: "Press Enter to select and reveal a matching graph object"
                 }
+                Button { text: "Fit"; onClicked: viewport.fitGraph() }
             }
         }
 
         RowLayout {
-            Layout.fillWidth: true; Layout.fillHeight: true; spacing: 0
+            Layout.fillWidth: true
+            Layout.fillHeight: true
+            spacing: 0
+
             Rectangle {
-                Layout.fillWidth: true; Layout.fillHeight: true
-                color: "#11151a"
-                border.color: "#303842"
+                id: graphPane
+                Layout.fillWidth: true
+                Layout.fillHeight: true
+                color: "#12161a"
+                border.color: "#303a43"
+
                 Flickable {
                     id: viewport
                     anchors.fill: parent
                     clip: true
-                    contentWidth: 1120
-                    contentHeight: Math.max(700, graph.nodeCount * 90)
                     boundsBehavior: Flickable.StopAtBounds
+                    contentWidth: graph.canvasWidth * zoom
+                    contentHeight: graph.canvasHeight * zoom
+                    property real zoom: 1.0
+                    property bool fittedOnce: false
 
-                    LinkLayer {
-                        id: links
-                        width: viewport.contentWidth; height: viewport.contentHeight
-                        nodes: window.visibleNodes; links: graph.links
-                        mediaFilter: window.mediaFilter
-                        z: 1
-                        onLinkActivated: (id, fromName, toName, media, state) => {
-                            window.selected = { kind: "link", name: fromName + " → " + toName,
-                                detail: state + " " + media + " link", media: media, id: id }
-                        }
+                    function clamp(value, minimum, maximum) { return Math.max(minimum, Math.min(maximum, value)) }
+                    function setZoom(next, pointX, pointY) {
+                        const old = zoom
+                        next = clamp(next, 0.45, 1.8)
+                        if (Math.abs(next - old) < 0.001) return
+                        contentX = clamp((contentX + pointX) * next / old - pointX, 0, Math.max(0, graph.canvasWidth * next - width))
+                        contentY = clamp((contentY + pointY) * next / old - pointY, 0, Math.max(0, graph.canvasHeight * next - height))
+                        zoom = next
+                    }
+                    function fitGraph() {
+                        if (graph.cardCount === 0) return
+                        zoom = clamp(Math.min(width / graph.canvasWidth, height / graph.canvasHeight) * 0.94, 0.45, 1.0)
+                        contentX = Math.max(0, (graph.canvasWidth * zoom - width) / 2)
+                        contentY = Math.max(0, (graph.canvasHeight * zoom - height) / 2)
+                        fittedOnce = true
+                    }
+                    function reveal(item) {
+                        const centerX = (item.x + item.width / 2) * zoom
+                        const centerY = (item.y + item.height / 2) * zoom
+                        contentX = clamp(centerX - width / 2, 0, Math.max(0, contentWidth - width))
+                        contentY = clamp(centerY - height / 2, 0, Math.max(0, contentHeight - height))
                     }
 
-                    Repeater {
-                        model: window.visibleNodes
-                        delegate: Rectangle {
-                            required property var modelData
-                            x: modelData.x; y: modelData.y
-                            width: 220; height: 112; radius: 5; z: 2
-                            color: "#292f37"
-                            border.width: window.selected.kind === "node" && window.selected.id === modelData.id ? 2 : 1
-                            border.color: window.selected.kind === "node" && window.selected.id === modelData.id ? "#83afff" : "#4a535e"
+                    Item {
+                        id: canvas
+                        width: graph.canvasWidth
+                        height: graph.canvasHeight
+                        scale: viewport.zoom
+                        transformOrigin: Item.TopLeft
 
-                            Rectangle { x: 0; y: 0; width: 5; height: parent.height; color: window.mediaColor(modelData.media); radius: 2 }
-                            Column {
-                                anchors.left: parent.left; anchors.leftMargin: 16; anchors.right: parent.right; anchors.rightMargin: 10
-                                anchors.verticalCenter: parent.verticalCenter; spacing: 7
-                                Label { text: modelData.name; color: "#e2e6ec"; font.bold: true; elide: Text.ElideRight; width: parent.width }
-                                Label { text: modelData.mediaClass || modelData.media; color: "#929daa"; font.pixelSize: 10; elide: Text.ElideRight; width: parent.width }
-                                Row { spacing: 7
-                                    Rectangle { width: 7; height: 7; radius: 4; color: modelData.state === "running" ? "#83dc9a" : "#687483" }
-                                    Label { text: modelData.state + " · " + modelData.role; color: "#adb6c1"; font.pixelSize: 10 }
-                                }
+                        MouseArea {
+                            anchors.fill: parent
+                            z: 0
+                            onClicked: graph.clearSelection()
+                        }
+
+                        Repeater {
+                            model: graph.cards
+                            delegate: GraphCard {
+                                required property var item
+                                card: item
+                                selected: graph.selectedKey === item.key
+                                onSelectedRequested: graph.selectCard(item.key)
+                                onToggleRequested: graph.toggleCard(item.key)
+                                onMoved: (x, y) => graph.moveCard(item.key, x, y)
                             }
-                            Rectangle { visible: modelData.role !== "source"; x: -6; y: 50; width: 12; height: 12; radius: 6; color: "#11151a"; border.width: 2; border.color: window.mediaColor(modelData.media) }
-                            Rectangle { visible: modelData.role !== "destination"; x: parent.width - 6; y: 50; width: 12; height: 12; radius: 6; color: "#11151a"; border.width: 2; border.color: window.mediaColor(modelData.media) }
-                            TapHandler { onTapped: window.selected = { kind: "node", name: modelData.name, detail: modelData.mediaClass, media: modelData.media, state: modelData.state, technicalName: modelData.technicalName, stableId: modelData.stableId, id: modelData.id } }
+                        }
+
+                    }
+
+                    WheelHandler {
+                        target: null
+                        onWheel: function(event) {
+                            viewport.setZoom(viewport.zoom * Math.pow(1.0015, event.angleDelta.y), event.x, event.y)
+                            event.accepted = true
                         }
                     }
+                    PinchHandler {
+                        id: pinch
+                        target: null
+                        property real startingZoom: 1
+                        onActiveChanged: if (active) startingZoom = viewport.zoom
+                        onActiveScaleChanged: viewport.setZoom(startingZoom * activeScale, centroid.position.x, centroid.position.y)
+                    }
 
-                    Label { visible: graph.nodeCount === 0 && graph.connected; anchors.centerIn: parent; text: "No media objects are currently available."; color: "#929daa" }
                 }
+
+                LinkLayer {
+                    anchors.fill: parent
+                    portAnchors: graph.anchors
+                    links: graph.renderedLinks
+                    blockers: graph.cardRects
+                    viewScale: viewport.zoom
+                    contentX: viewport.contentX
+                    contentY: viewport.contentY
+                    mediaFilter: graph.mediaFilter
+                    selectedKey: graph.selectedKey
+                    z: 3
+                    onLinkActivated: key => graph.selectLink(key)
+                }
+
                 Rectangle {
-                    visible: !graph.connected && graph.nodeCount === 0
-                    anchors.centerIn: parent; width: 390; height: 150; radius: 6
-                    color: "#20262d"; border.color: "#49535e"
+                    anchors.left: parent.left; anchors.bottom: parent.bottom
+                    anchors.margins: 12
+                    width: zoomControls.width + 18; height: 38; radius: 3
+                    color: "#1d2328"; border.color: "#46515b"; z: 4
+                    Row {
+                        id: zoomControls; anchors.centerIn: parent; spacing: 5
+                        ToolButton { text: "−"; width: 30; height: 28; onClicked: viewport.setZoom(viewport.zoom / 1.15, viewport.width / 2, viewport.height / 2) }
+                        Text { width: 42; anchors.verticalCenter: parent.verticalCenter; horizontalAlignment: Text.AlignHCenter; text: Math.round(viewport.zoom * 100) + "%"; color: "#b8c1c8"; font.pixelSize: 10 }
+                        ToolButton { text: "+"; width: 30; height: 28; onClicked: viewport.setZoom(viewport.zoom * 1.15, viewport.width / 2, viewport.height / 2) }
+                    }
+                }
+
+                Rectangle {
+                    visible: !graph.connected && graph.cardCount === 0
+                    anchors.centerIn: parent
+                    width: 400; height: 150; radius: 4
+                    color: "#20272d"; border.color: "#4b5761"
                     Column { anchors.centerIn: parent; spacing: 12
-                        Label { anchors.horizontalCenter: parent.horizontalCenter; text: "PipeWire is unavailable"; color: "#edf1f6"; font.pixelSize: 17; font.bold: true }
-                        Label { anchors.horizontalCenter: parent.horizontalCenter; text: graph.statusText; color: "#aab4c0" }
-                        Label { anchors.horizontalCenter: parent.horizontalCenter; text: "Run with --demo to explore the interface."; color: "#83afff"; font.pixelSize: 11 }
+                        Text { anchors.horizontalCenter: parent.horizontalCenter; text: "PipeWire is unavailable"; color: "#edf0f2"; font.pixelSize: 17; font.weight: Font.DemiBold }
+                        Text { anchors.horizontalCenter: parent.horizontalCenter; text: graph.statusText; color: "#aab4bc" }
+                        Text { anchors.horizontalCenter: parent.horizontalCenter; text: "Run WireRunner with --demo to explore the graph."; color: "#7da7e8"; font.pixelSize: 10 }
                     }
                 }
             }
 
-            Rectangle {
-                Layout.preferredWidth: 292; Layout.fillHeight: true
-                color: "#20252c"; border.color: "#3d4651"
-                ColumnLayout {
-                    anchors.fill: parent; anchors.margins: 17; spacing: 14
-                    Label { text: "Selected"; color: "#929daa"; font.pixelSize: 10 }
-                    Label { text: window.selected.name; color: "#e2e6ec"; font.pixelSize: 18; font.bold: true; wrapMode: Text.Wrap; Layout.fillWidth: true }
-                    Label { text: window.selected.detail; color: "#aab4c0"; font.pixelSize: 11; wrapMode: Text.Wrap; Layout.fillWidth: true }
-                    Rectangle { Layout.fillWidth: true; height: 1; color: "#3b444e" }
-                    GridLayout {
-                        columns: 2; Layout.fillWidth: true
-                        Label { text: "Type"; color: "#929daa"; font.pixelSize: 10 }
-                        Label { text: window.selected.kind; color: "#d4dae2"; Layout.alignment: Qt.AlignRight }
-                        Label { text: "Media"; color: "#929daa"; font.pixelSize: 10 }
-                        Label { text: window.selected.media || "—"; color: window.mediaColor(window.selected.media); Layout.alignment: Qt.AlignRight }
-                        Label { visible: window.selected.state !== undefined; text: "State"; color: "#929daa"; font.pixelSize: 10 }
-                        Label { visible: window.selected.state !== undefined; text: window.selected.state || "—"; color: "#d4dae2"; Layout.alignment: Qt.AlignRight }
-                    }
-                    Label { visible: window.selected.technicalName !== undefined; text: window.selected.technicalName || ""; color: "#75808d"; font.family: "monospace"; font.pixelSize: 9; wrapMode: Text.WrapAnywhere; Layout.fillWidth: true }
-                    Item { Layout.fillHeight: true }
-                    Label { text: "Read-only milestone"; color: "#687483"; font.pixelSize: 10 }
-                }
+            InspectorPane {
+                Layout.preferredWidth: 320
+                Layout.fillHeight: true
+                selection: graph.selected
+                focusActive: graph.focusActive
+                onFocusRequested: graph.focusSelected()
+                onClearFocusRequested: graph.clearFocus()
+                onToggleRequested: key => graph.toggleCard(key)
             }
+        }
+    }
+
+    Connections {
+        target: graph
+        function onGraphChanged() {
+            if (!viewport.fittedOnce && graph.cardCount > 0) Qt.callLater(viewport.fitGraph)
         }
     }
 }

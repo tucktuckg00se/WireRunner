@@ -1,6 +1,9 @@
 add_library(wirerunner_core STATIC
   domain/Graph.cpp
   backend/FixtureGraphSource.cpp
+  presentation/LayoutStore.cpp
+  presentation/StableListModel.cpp
+  presentation/GraphController.cpp
 )
 target_include_directories(wirerunner_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(wirerunner_core PUBLIC Qt6::Core)
@@ -8,7 +11,6 @@ target_link_libraries(wirerunner_core PUBLIC Qt6::Core)
 qt_add_executable(wirerunner
   main.cpp
   backend/WirePlumberGraphSource.cpp
-  presentation/GraphController.cpp
   presentation/LinkLayer.cpp
 )
 
@@ -22,7 +24,7 @@ target_link_libraries(wirerunner PRIVATE
 qt_add_qml_module(wirerunner
   URI WireRunner
   VERSION 1.0
-  QML_FILES qml/Main.qml
+  QML_FILES qml/Main.qml qml/GraphCard.qml qml/InspectorPane.qml
 )
 
 qt_add_resources(wirerunner wirerunner_resources

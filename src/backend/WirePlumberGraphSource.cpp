@@ -184,7 +184,7 @@ GraphSnapshot WirePlumberGraphSource::snapshot() const {
     if (name.empty()) name = "Node " + std::to_string(objectId);
     const auto mediaClass = property(object, "media.class");
     graph.nodes.push_back({objectId, std::move(name), technicalName,
-      firstProperty(object, {"object.serial", "device.serial", "application.id", "node.name"}),
+      firstProperty(object, {"node.name", "application.id", "device.serial", "object.serial"}),
       mediaClass, nodeState(WP_NODE(value)), classifyMedia(mediaClass), NodeRole::Processor,
       numericProperty(object, "client.id"), numericProperty(object, "device.id")});
   });
@@ -198,7 +198,8 @@ GraphSnapshot WirePlumberGraphSource::snapshot() const {
     graph.ports.push_back({objectId, nodeId,
       firstProperty(object, {"port.alias", "port.name"}), property(object, "audio.channel"),
       wp_port_get_direction(WP_PORT(value)) == WP_DIRECTION_OUTPUT ? PortDirection::Output : PortDirection::Input,
-      nodeMedia.contains(nodeId) ? nodeMedia[nodeId] : classifyMedia({}, property(object, "format.dsp"))});
+      nodeMedia.contains(nodeId) ? nodeMedia[nodeId] : classifyMedia({}, property(object, "format.dsp")),
+      property(object, "format.dsp")});
   });
   eachObject(manager_, WP_TYPE_LINK, [&](GObject *value) {
     guint32 outputNode{}, outputPort{}, inputNode{}, inputPort{};
@@ -206,7 +207,7 @@ GraphSnapshot WirePlumberGraphSource::snapshot() const {
     graph.links.push_back({wp_proxy_get_bound_id(WP_PROXY(value)), outputNode, outputPort, inputNode, inputPort,
       linkState(WP_LINK(value)), nodeMedia.contains(outputNode) ? nodeMedia[outputNode] : MediaType::Unknown});
   });
-  layoutGraph(graph);
+  classifyNodeRoles(graph);
   return graph;
 }
 
