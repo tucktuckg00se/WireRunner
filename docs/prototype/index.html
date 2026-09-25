@@ -1,0 +1,125 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>WireRunner — WirePlumber</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<main class="app">
+  <header class="topbar">
+    <div class="brand"><span class="brand-mark"></span><strong>WireRunner</strong></div>
+    <button class="setup" id="setupButton"><span>Everyday</span><small>Current setup</small><b>⌄</b></button>
+    <div class="engine"><i></i><span>48 kHz</span><span>256 frames</span><span>5.3 ms</span></div>
+    <div class="top-actions">
+      <button id="undo" title="Undo">↶</button>
+      <button id="redo" title="Redo">↷</button>
+      <button id="searchButton">⌕ Find</button>
+      <button class="primary" id="addButton">＋ Add</button>
+    </div>
+  </header>
+
+  <section class="notice" id="notice">
+    <div><strong>This is your live audio system.</strong> Sound flows from left to right. Drag between round ports to connect anything.</div>
+    <button id="dismissNotice">Got it</button>
+  </section>
+
+  <div class="main">
+    <section class="graph-wrap">
+      <div class="graph-tools">
+        <div class="scope"><button class="active">All audio</button><button>Playing now</button><button>Hardware</button></div>
+        <div class="graph-summary"><span>7 nodes</span><span>6 links</span><button id="fit">Fit graph</button></div>
+      </div>
+      <div class="graph" id="graph" tabindex="0" aria-label="Live PipeWire graph">
+        <svg id="wires" aria-label="Audio links"></svg>
+        <div class="column-label source-label">Sources</div>
+        <div class="column-label process-label">Processing</div>
+        <div class="column-label output-label">Outputs</div>
+
+        <article class="node app-node selected" id="firefox" style="--x:4;--y:12" tabindex="0">
+          <header><span class="icon app-icon">F</span><div><strong>Firefox</strong><small>Video · playing</small></div><span class="meter"><i style="--level:72%"></i></span></header>
+          <div class="level"><button class="mute">M</button><input type="range" min="0" max="120" value="84" aria-label="Firefox volume"><output>84%</output></div>
+          <button class="port out" data-port="firefox-out" aria-label="Firefox stereo output"><span>stereo</span><i></i></button>
+        </article>
+
+        <article class="node app-node" id="spotify" style="--x:4;--y:39" tabindex="0">
+          <header><span class="icon app-icon">S</span><div><strong>Spotify</strong><small>Music · playing</small></div><span class="meter"><i style="--level:51%"></i></span></header>
+          <div class="level"><button class="mute">M</button><input type="range" min="0" max="120" value="68" aria-label="Spotify volume"><output>68%</output></div>
+          <button class="port out" data-port="spotify-out"><span>stereo</span><i></i></button>
+        </article>
+
+        <article class="node hardware-node" id="mic" style="--x:4;--y:72" tabindex="0">
+          <header><span class="icon input-icon">●</span><div><strong>USB microphone</strong><small>Capture · active</small></div><span class="meter pink"><i style="--level:61%"></i></span></header>
+          <div class="level"><button class="mute">M</button><input type="range" min="0" max="120" value="76" aria-label="Microphone volume"><output>76%</output></div>
+          <button class="port out capture" data-port="mic-out"><span>stereo</span><i></i></button>
+        </article>
+
+        <article class="node virtual-node" id="streammix" style="--x:39;--y:49" tabindex="0">
+          <header><span class="icon virtual-icon">◇</span><div><strong>Stream Mix</strong><small>Virtual source</small></div><button class="bypass" title="Bypass">↝</button></header>
+          <div class="inside"><span>2 inputs</span><span>−3.0 dB</span><span>48 kHz</span></div>
+          <button class="port in capture" data-port="mix-in"><i></i><span>mix in</span></button>
+          <button class="port out capture" data-port="mix-out"><span>virtual mic</span><i></i></button>
+        </article>
+
+        <article class="node output-node" id="headphones" style="--x:73;--y:10" tabindex="0">
+          <header><span class="icon output-icon">⌁</span><div><strong>Built-in headphones</strong><small>Analog stereo</small></div><span class="default" title="Default playback">Default</span></header>
+          <div class="level"><button class="mute">M</button><input type="range" min="0" max="120" value="70" aria-label="Headphones volume"><output>70%</output></div>
+          <button class="port in" data-port="headphones-in"><i></i><span>stereo</span></button>
+        </article>
+
+        <article class="node output-node" id="scarlett" style="--x:73;--y:38" tabindex="0">
+          <header><span class="icon output-icon">⌁</span><div><strong>Scarlett 18i20</strong><small>Pro Audio · 12 × 10</small></div><button class="expand" id="expandScarlett">12 ports</button></header>
+          <div class="port-groups" id="scarlettGroups"><span>Playback 1–10</span><span>Capture 1–12</span></div>
+          <button class="port in" data-port="scarlett-in"><i></i><span>playback 1–2</span></button>
+        </article>
+
+        <article class="node app-node" id="obs" style="--x:73;--y:72" tabindex="0">
+          <header><span class="icon app-icon">O</span><div><strong>OBS Studio</strong><small>Recording</small></div><span class="recording">● REC</span></header>
+          <div class="inside"><span>Stream Mix</span><span>48 kHz</span></div>
+          <button class="port in capture" data-port="obs-in"><i></i><span>audio input</span></button>
+        </article>
+
+        <div class="empty-hint" id="hint">Select an object or a wire to change it.</div>
+        <div class="zoom"><button>−</button><span>100%</span><button>＋</button></div>
+      </div>
+    </section>
+
+    <aside class="inspector" id="inspector">
+      <div class="inspect-head"><div><small>Selected</small><h1 id="inspectTitle">Firefox</h1><p id="inspectKind">Playback stream · running</p></div><button id="closeInspector" aria-label="Close inspector">×</button></div>
+      <div id="nodeInspector">
+        <section>
+          <label class="section-label" for="inspectVolume">Volume</label>
+          <div class="big-level"><input id="inspectVolume" type="range" min="0" max="120" value="84"><output id="inspectVolumeValue">84%</output></div>
+          <div class="meters"><span>L<i><b style="--level:72%"></b></i></span><span>R<i><b style="--level:67%"></b></i></span></div>
+        </section>
+        <section>
+          <div class="section-row"><span class="section-label">Connections</span><button id="focusLinks">Show only these</button></div>
+          <p class="explanation" id="connectionSummary">Firefox has 3 outgoing links. Select a wire on the canvas to inspect or remove it.</p>
+        </section>
+        <section>
+          <div class="section-row"><span class="section-label">Behavior</span><button>＋ Add rule</button></div>
+          <div class="policy-row"><span class="policy-symbol">◇</span><div><strong>Follows the default output</strong><small>WirePlumber policy · new streams</small></div><button>Change</button></div>
+        </section>
+        <details><summary>Technical properties</summary><dl><dt>Node ID</dt><dd>84</dd><dt>Media class</dt><dd>Stream/Output/Audio</dd><dt>Format</dt><dd>F32LE · 48 kHz</dd><dt>Latency</dt><dd>11.3 ms</dd></dl></details>
+      </div>
+      <div id="linkInspector" hidden>
+        <section class="link-route"><div class="route-end"><span id="linkFromIcon" class="icon app-icon">F</span><b id="linkFrom">Firefox</b></div><div class="route-arrow">────▶</div><div class="route-end"><span id="linkToIcon" class="icon output-icon">⌁</span><b id="linkTo">Headphones</b></div></section>
+        <section>
+          <span class="section-label">Created by</span>
+          <div class="policy-row"><span class="policy-symbol">◇</span><div><strong id="linkOwner">WirePlumber policy</strong><small id="linkPersistence">Live link · follows default</small></div></div>
+        </section>
+        <section><button class="wide" id="rememberLink">Remember for future streams</button><button class="wide danger" id="removeLink">Remove this link</button></section>
+        <details><summary>Link properties</summary><dl><dt>Channels</dt><dd>FL, FR</dd><dt>State</dt><dd>Active</dd><dt>Format</dt><dd>F32LE · 48 kHz</dd></dl></details>
+      </div>
+    </aside>
+  </div>
+
+  <footer><span id="status">Ready</span><span>Drag a port to connect · click a wire to inspect · Ctrl Z to undo</span></footer>
+
+  <dialog id="addDialog"><form method="dialog"><header><h2>Add to the graph</h2><button value="cancel">×</button></header><button value="virtual-source"><span class="icon virtual-icon">◇</span><div><strong>Virtual source</strong><small>Mix sources into a new microphone</small></div></button><button value="virtual-output"><span class="icon output-icon">∥</span><div><strong>Virtual output</strong><small>Send audio to several outputs</small></div></button><button value="filter"><span class="icon process-icon">∿</span><div><strong>Filter or effect</strong><small>Process audio between two nodes</small></div></button><button value="loopback"><span class="icon input-icon">↪</span><div><strong>Loopback</strong><small>Expose a monitor or return path</small></div></button></form></dialog>
+  <div class="search-popover" id="searchPopover" hidden><input id="searchInput" placeholder="Find an object on the graph…"><div id="searchResults"></div></div>
+</main>
+<script src="app.js"></script>
+</body>
+</html>
