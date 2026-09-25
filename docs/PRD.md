@@ -2,7 +2,7 @@
 
 **Document:** Product requirements document  
 **Status:** Draft for product and engineering review  
-**Last updated:** September 24, 2026  
+**Last updated:** September 25, 2026
 **Working name:** WireRunner
 
 ## 1. Product summary
@@ -509,3 +509,12 @@ WireRunner's differentiator is the combination of a faithful multimedia graph, v
 - WirePlumber documentation: <https://pipewire.pages.freedesktop.org/wireplumber/>
 - WirePlumber linking policy: <https://pipewire.pages.freedesktop.org/wireplumber/policies/linking.html>
 - WirePlumber video configuration: <https://pipewire.pages.freedesktop.org/wireplumber/daemon/configuration/video.html>
+
+## 22. Implementation milestones
+
+- **0.1:** Native C++23, Qt Quick, and libwireplumber application foundation.
+- **0.2:** Composed live graph with stable layout, grouped and exact ports, search, focus, filtering, pan, and zoom.
+- **0.3:** Live port-to-port link creation, individual link removal, lingered manual links, feedback-link confirmation, snapshot-confirmed commands, and bounded session undo and redo.
+
+Volume and mute controls, virtual object creation, remembered routing policy,
+and persistent scenes remain subsequent milestones.

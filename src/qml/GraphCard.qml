@@ -6,9 +6,15 @@ Rectangle {
     id: root
     required property var card
     required property bool selected
+    property var routing: ({})
     signal selectedRequested
     signal toggleRequested
     signal moved(real x, real y)
+    signal expandForRoutingRequested
+    signal routeStarted(var portId, real graphX, real graphY)
+    signal routeMoved(real graphX, real graphY)
+    signal routeFinished(real graphX, real graphY)
+    signal routeTargetRequested(var portId)
 
     function mediaColor(media) {
         if (media === "video") return "#e6b765"
@@ -20,6 +26,22 @@ Rectangle {
         if (port.label !== undefined) return port.label
         if (port.channel) return port.channel + "  " + port.name
         return port.name
+    }
+    function containsPort(values, id) {
+        if (!values) return false
+        for (let index = 0; index < values.length; ++index)
+            if (Number(values[index]) === Number(id)) return true
+        return false
+    }
+    function focusFirstCompatibleInput() {
+        for (let index = 0; index < inputRepeater.count; ++index) {
+            const target = inputRepeater.itemAt(index)
+            if (target && target.routeCompatible && target.activeFocusOnTab) {
+                target.forceActiveFocus()
+                return true
+            }
+        }
+        return false
     }
 
     width: card.width
@@ -90,14 +112,43 @@ Rectangle {
     }
 
     Repeater {
+        id: inputRepeater
         model: root.card.expanded ? root.card.inputs : root.card.inputGroups
         delegate: Item {
             required property var modelData
             required property int index
             x: 0; y: 100 + index * 28
             width: root.width / 2 - 8; height: 20
-            Rectangle { x: -5; y: 4; width: 11; height: 11; radius: 6; color: "#12161a"; border.width: 2; border.color: root.mediaColor(modelData.media) }
+            property bool routeCompatible: root.containsPort(root.routing.compatibleInputs, modelData.id)
+            property bool routeTarget: Boolean(root.routing.active) && Number(root.routing.targetPortId) === Number(modelData.id)
+            property string routeReason: !root.routing.active || modelData.id === undefined ? ""
+                : routeCompatible ? (root.routing.compatibleNotes[String(modelData.id)] || "")
+                : (root.routing.incompatibleInputs[String(modelData.id)] || "This target is incompatible")
+            opacity: root.routing.active && modelData.id !== undefined && !routeCompatible ? 0.32 : 1
+            activeFocusOnTab: modelData.id !== undefined && (!root.routing.active || routeCompatible)
+            Accessible.role: Accessible.Button
+            Accessible.name: "Input " + root.portLabel(modelData)
+            Accessible.description: root.routing.active ? (routeCompatible ? "Compatible routing target" : "Incompatible routing target") : "Input port"
+            HoverHandler { id: routeHover }
+            ToolTip.visible: routeHover.hovered && routeReason.length > 0
+            ToolTip.text: routeReason
+            Rectangle {
+                x: -5; y: 4; width: 11; height: 11; radius: 6; color: routeTarget ? root.mediaColor(modelData.media) : "#12161a"
+                border.width: routeTarget ? 3 : 2
+                border.color: root.routing.active && routeCompatible ? "#edf0f2" : root.mediaColor(modelData.media)
+            }
             Text { x: 13; width: parent.width - 16; anchors.verticalCenter: parent.verticalCenter; text: root.portLabel(modelData); color: "#c3cbd1"; font.pixelSize: 9; elide: Text.ElideRight }
+            MouseArea {
+                anchors.fill: parent
+                cursorShape: root.routing.active && parent.routeCompatible ? Qt.PointingHandCursor : Qt.ArrowCursor
+                onClicked: {
+                    if (root.routing.active && modelData.id !== undefined) root.routeTargetRequested(modelData.id)
+                    else if (modelData.count > 1) root.expandForRoutingRequested()
+                    else root.selectedRequested()
+                }
+            }
+            Keys.onReturnPressed: if (root.routing.active && modelData.id !== undefined) root.routeTargetRequested(modelData.id)
+            Keys.onEscapePressed: root.routeFinished(-10000, -10000)
         }
     }
     Repeater {
@@ -107,8 +158,51 @@ Rectangle {
             required property int index
             x: root.width / 2 + 8; y: 100 + index * 28
             width: root.width / 2 - 8; height: 20
+            property bool exactPort: modelData.id !== undefined && modelData.id !== null
+            activeFocusOnTab: true
+            Accessible.role: Accessible.Button
+            Accessible.name: exactPort ? "Route from output " + root.portLabel(modelData) : "Expand " + root.portLabel(modelData)
             Text { width: parent.width - 13; anchors.verticalCenter: parent.verticalCenter; horizontalAlignment: Text.AlignRight; text: root.portLabel(modelData); color: "#c3cbd1"; font.pixelSize: 9; elide: Text.ElideLeft }
-            Rectangle { x: parent.width - 6; y: 4; width: 11; height: 11; radius: 6; color: "#12161a"; border.width: 2; border.color: root.mediaColor(modelData.media) }
+            Rectangle {
+                x: parent.width - 6; y: 4; width: 11; height: 11; radius: 6
+                color: root.routing.active && Number(root.routing.outputPortId) === Number(modelData.id) ? root.mediaColor(modelData.media) : "#12161a"
+                border.width: 2; border.color: root.mediaColor(modelData.media)
+            }
+            MouseArea {
+                id: routeMouse
+                anchors.fill: parent
+                cursorShape: Qt.CrossCursor
+                property bool routeInProgress: false
+                onPressed: function(mouse) {
+                    if (!parent.exactPort) {
+                        root.expandForRoutingRequested()
+                        return
+                    }
+                    const point = mapToItem(root.parent, mouse.x, mouse.y)
+                    routeInProgress = true
+                    root.routeStarted(modelData.id, point.x, point.y)
+                }
+                onPositionChanged: function(mouse) {
+                    if (!routeInProgress) return
+                    const point = mapToItem(root.parent, mouse.x, mouse.y)
+                    root.routeMoved(point.x, point.y)
+                }
+                onReleased: function(mouse) {
+                    if (!routeInProgress) return
+                    const point = mapToItem(root.parent, mouse.x, mouse.y)
+                    routeInProgress = false
+                    root.routeFinished(point.x, point.y)
+                }
+                onCanceled: {
+                    if (routeInProgress) root.routeFinished(-10000, -10000)
+                    routeInProgress = false
+                }
+            }
+            Keys.onReturnPressed: {
+                if (!exactPort) root.expandForRoutingRequested()
+                else root.routeStarted(modelData.id, root.x + root.width, root.y + 100 + index * 28 + 9)
+            }
+            Keys.onEscapePressed: root.routeFinished(-10000, -10000)
         }
     }
 

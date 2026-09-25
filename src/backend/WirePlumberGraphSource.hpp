@@ -17,11 +17,14 @@ public:
   ~WirePlumberGraphSource() override;
   void start(SnapshotCallback snapshot, StatusCallback status) override;
   void stop() override;
+  void createLink(CreateLinkRequest request, CommandCallback callback) override;
+  void destroyLink(DestroyLinkRequest request, CommandCallback callback) override;
 
 private:
   void run(std::stop_token token);
   void publish();
-  GraphSnapshot snapshot() const;
+  GraphSnapshot snapshot();
+  void invoke(std::function<void()> task);
 
   SnapshotCallback snapshotCallback_;
   StatusCallback statusCallback_;
@@ -31,6 +34,7 @@ private:
   _GMainLoop *loop_{};
   _WpCore *core_{};
   _WpObjectManager *manager_{};
+  std::uint64_t revision_{};
 };
 
 } // namespace wirerunner

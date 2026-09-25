@@ -2,6 +2,7 @@
 #pragma once
 
 #include <QQuickPaintedItem>
+#include <QVariantMap>
 #include <QVariantList>
 
 namespace wirerunner {
@@ -16,6 +17,7 @@ class LinkLayer : public QQuickPaintedItem {
   Q_PROPERTY(double contentY READ contentY WRITE setContentY NOTIFY viewTransformChanged)
   Q_PROPERTY(QString mediaFilter READ mediaFilter WRITE setMediaFilter NOTIFY mediaFilterChanged)
   Q_PROPERTY(QString selectedKey READ selectedKey WRITE setSelectedKey NOTIFY selectedKeyChanged)
+  Q_PROPERTY(QVariantMap routePreview READ routePreview WRITE setRoutePreview NOTIFY routePreviewChanged)
 
 public:
   explicit LinkLayer(QQuickItem *parent = nullptr);
@@ -27,6 +29,7 @@ public:
   double contentY() const { return contentY_; }
   QString mediaFilter() const { return mediaFilter_; }
   QString selectedKey() const { return selectedKey_; }
+  QVariantMap routePreview() const { return routePreview_; }
   void setPortAnchors(QVariantList value);
   void setLinks(QVariantList value);
   void setBlockers(QVariantList value);
@@ -35,6 +38,7 @@ public:
   void setContentY(double value);
   void setMediaFilter(QString value);
   void setSelectedKey(QString value);
+  void setRoutePreview(QVariantMap value);
 
 signals:
   void portAnchorsChanged();
@@ -43,6 +47,7 @@ signals:
   void viewTransformChanged();
   void mediaFilterChanged();
   void selectedKeyChanged();
+  void routePreviewChanged();
   void linkActivated(QString key);
 
 protected:
@@ -55,6 +60,7 @@ private:
   QVariantList blockers_;
   QString mediaFilter_{"all"};
   QString selectedKey_;
+  QVariantMap routePreview_;
   double viewScale_{1.0};
   double contentX_{};
   double contentY_{};

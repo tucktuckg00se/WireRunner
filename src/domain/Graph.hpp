@@ -40,6 +40,7 @@ struct GraphPort {
   PortDirection direction{PortDirection::Input};
   MediaType media{MediaType::Unknown};
   std::string format{};
+  std::uint32_t permissions{};
 };
 
 struct GraphLink {
@@ -50,6 +51,10 @@ struct GraphLink {
   GlobalId inputPortId{};
   std::string state;
   MediaType media{MediaType::Unknown};
+  bool feedback{};
+  bool linger{};
+  bool createdByWireRunner{};
+  std::uint32_t permissions{};
 };
 
 struct GraphSnapshot {
@@ -60,6 +65,7 @@ struct GraphSnapshot {
   std::vector<GraphLink> links;
   std::string remoteName;
   std::string remoteVersion;
+  std::uint64_t revision{};
 };
 
 MediaType classifyMedia(std::string_view mediaClass, std::string_view format = {});

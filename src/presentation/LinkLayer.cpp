@@ -55,6 +55,7 @@ void LinkLayer::setContentX(double value) { if(qFuzzyCompare(contentX_,value))re
 void LinkLayer::setContentY(double value) { if(qFuzzyCompare(contentY_,value))return;contentY_=value;emit viewTransformChanged();update(); }
 void LinkLayer::setMediaFilter(QString value) { if(mediaFilter_==value)return; mediaFilter_=std::move(value); emit mediaFilterChanged(); update(); }
 void LinkLayer::setSelectedKey(QString value) { if(selectedKey_==value)return; selectedKey_=std::move(value); emit selectedKeyChanged(); update(); }
+void LinkLayer::setRoutePreview(QVariantMap value) { if(routePreview_==value)return; routePreview_=std::move(value); emit routePreviewChanged(); update(); }
 
 void LinkLayer::paint(QPainter *painter) {
   const auto graphPoints = anchorPoints(portAnchors_);
@@ -82,9 +83,24 @@ void LinkLayer::paint(QPainter *painter) {
     const QRectF bounds(points.value(output),points.value(input));
     if (!bounds.normalized().adjusted(-100.0,-100.0,100.0,100.0).intersects({0.0,0.0,width(),height()})) continue;
     QPen pen(linkColor(media,link.value("focused").toBool()),
-      link.value("key").toString()==selectedKey_?4.0:2.0,Qt::SolidLine,Qt::RoundCap,Qt::RoundJoin);
+      link.value("key").toString()==selectedKey_?4.0:2.0,
+      link.value("pending").toBool()?Qt::DashLine:Qt::SolidLine,Qt::RoundCap,Qt::RoundJoin);
     painter->setPen(pen);
     painter->drawPath(linkPath(points.value(output),points.value(input)));
+  }
+  if (routePreview_.value(QStringLiteral("active")).toBool()) {
+    const auto outputKey = routePreview_.value(QStringLiteral("outputAnchorKey")).toString();
+    if (points.contains(outputKey)) {
+      const auto targetKey = routePreview_.value(QStringLiteral("targetAnchorKey")).toString();
+      const QPointF target = points.contains(targetKey) ? points.value(targetKey)
+        : QPointF(routePreview_.value(QStringLiteral("cursorX")).toDouble()*viewScale_-contentX_,
+                  routePreview_.value(QStringLiteral("cursorY")).toDouble()*viewScale_-contentY_);
+      auto color = linkColor(routePreview_.value(QStringLiteral("media")).toString(), true);
+      if (!targetKey.isEmpty() && !routePreview_.value(QStringLiteral("validTarget")).toBool()) color = QColor("#e67575");
+      QPen previewPen(color, 2.5, Qt::DashLine, Qt::RoundCap, Qt::RoundJoin);
+      painter->setPen(previewPen);
+      painter->drawPath(linkPath(points.value(outputKey), target));
+    }
   }
 }
 

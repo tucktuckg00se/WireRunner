@@ -1,5 +1,6 @@
 add_library(wirerunner_core STATIC
   domain/Graph.cpp
+  domain/Routing.cpp
   backend/FixtureGraphSource.cpp
   presentation/LayoutStore.cpp
   presentation/StableListModel.cpp

@@ -7,8 +7,10 @@
 
 #include <QObject>
 #include <QSet>
+#include <QTimer>
 #include <QVariantList>
 #include <memory>
+#include <optional>
 
 namespace wirerunner {
 
@@ -30,6 +32,12 @@ class GraphController final : public QObject {
   Q_PROPERTY(int linkCount READ linkCount NOTIFY graphChanged)
   Q_PROPERTY(double canvasWidth READ canvasWidth NOTIFY graphChanged)
   Q_PROPERTY(double canvasHeight READ canvasHeight NOTIFY graphChanged)
+  Q_PROPERTY(QVariantMap routing READ routing NOTIFY routingChanged)
+  Q_PROPERTY(bool feedbackConfirmation READ feedbackConfirmation NOTIFY feedbackConfirmationChanged)
+  Q_PROPERTY(QString noticeText READ noticeText NOTIFY noticeChanged)
+  Q_PROPERTY(bool canUndo READ canUndo NOTIFY historyChanged)
+  Q_PROPERTY(bool canRedo READ canRedo NOTIFY historyChanged)
+  Q_PROPERTY(bool commandPending READ commandPending NOTIFY commandPendingChanged)
 
 public:
   explicit GraphController(std::unique_ptr<GraphSource> source, QString layoutPath = {}, QObject *parent = nullptr);
@@ -52,6 +60,12 @@ public:
   int linkCount() const { return links_.count(); }
   double canvasWidth() const { return canvasWidth_; }
   double canvasHeight() const { return canvasHeight_; }
+  QVariantMap routing() const { return routing_; }
+  bool feedbackConfirmation() const { return feedbackConfirmation_; }
+  QString noticeText() const { return noticeText_; }
+  bool canUndo() const;
+  bool canRedo() const;
+  bool commandPending() const { return pending_.has_value(); }
 
   void setMediaFilter(QString value);
   Q_INVOKABLE void moveCard(const QString &key, double x, double y);
@@ -62,6 +76,17 @@ public:
   Q_INVOKABLE void focusSelected();
   Q_INVOKABLE void clearFocus();
   Q_INVOKABLE QVariantMap findCard(const QString &query);
+  Q_INVOKABLE void expandForRouting(const QString &cardKey);
+  Q_INVOKABLE void beginRoute(quint32 outputPortId, double x, double y);
+  Q_INVOKABLE void updateRoute(double x, double y);
+  Q_INVOKABLE void finishRoute(double x, double y);
+  Q_INVOKABLE void finishRouteToPort(quint32 inputPortId);
+  Q_INVOKABLE void cancelRoute();
+  Q_INVOKABLE void confirmFeedback();
+  Q_INVOKABLE void cancelFeedback();
+  Q_INVOKABLE void disconnectSelected();
+  Q_INVOKABLE void undo();
+  Q_INVOKABLE void redo();
 
 signals:
   void graphChanged();
@@ -69,14 +94,37 @@ signals:
   void selectionChanged();
   void focusChanged();
   void mediaFilterChanged();
+  void routingChanged();
+  void feedbackConfirmationChanged();
+  void noticeChanged();
+  void historyChanged();
+  void commandPendingChanged();
 
 private:
   struct CardState { QPointF position; bool expanded{}; bool persistent{}; };
+  enum class HistoryKind { Created, Destroyed };
+  enum class OperationIntent { Normal, Undo, Redo };
+  struct HistoryAction { HistoryKind kind; GraphLink link; qint64 recordedAt{}; };
+  struct PendingOperation {
+    CommandId commandId{};
+    bool creating{};
+    GraphLink link;
+    OperationIntent intent{OperationIntent::Normal};
+  };
   void applySnapshot(std::shared_ptr<const GraphSnapshot> snapshot);
   void applyStatus(SourceStatus status);
+  void applyCommandResult(CommandResult result);
   void rebuildPresentation();
+  void rebuildRouting();
   void updateSelection();
   void saveCard(const QString &key);
+  void submitCreate(GlobalId outputPortId, GlobalId inputPortId, bool feedback,
+    OperationIntent intent = OperationIntent::Normal);
+  void submitDestroy(const GraphLink &link, OperationIntent intent = OperationIntent::Normal);
+  void resolvePending();
+  void completePending(const GraphLink &observed);
+  void failPending(const QString &message);
+  void setNotice(QString message);
 
   std::unique_ptr<GraphSource> source_;
   LayoutStore layoutStore_;
@@ -86,6 +134,7 @@ private:
   QVariantList cardRects_;
   QVariantList renderedLinks_;
   QVariantMap selected_;
+  QVariantMap routing_;
   std::shared_ptr<const GraphSnapshot> snapshot_;
   ComposedGraph composed_;
   QHash<QString, CardState> cardStates_;
@@ -96,7 +145,17 @@ private:
   QString mediaFilter_{"all"};
   QString selectedKey_;
   QString selectedKind_;
+  QString noticeText_;
   bool connected_{};
+  bool feedbackConfirmation_{};
+  std::optional<GlobalId> routeOutputPort_;
+  std::optional<GlobalId> routeTargetPort_;
+  QPointF routeCursor_;
+  std::optional<PendingOperation> pending_;
+  QVector<HistoryAction> history_;
+  qsizetype historyCursor_{};
+  CommandId nextCommandId_{1};
+  QTimer commandTimer_;
   double canvasWidth_{1000.0};
   double canvasHeight_{650.0};
 };

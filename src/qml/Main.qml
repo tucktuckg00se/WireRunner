@@ -20,6 +20,12 @@ ApplicationWindow {
         if (media === "audio") return "#68d18b"
         return "#89949e"
     }
+    function focusFirstRoutingTarget() {
+        for (let index = 0; index < cardRepeater.count; ++index) {
+            const card = cardRepeater.itemAt(index)
+            if (card && card.focusFirstCompatibleInput()) return
+        }
+    }
 
     header: Rectangle {
         height: 54
@@ -76,6 +82,8 @@ ApplicationWindow {
                     text: "Show full graph"
                     onClicked: graph.clearFocus()
                 }
+                ToolButton { text: "Undo"; enabled: graph.canUndo; onClicked: graph.undo(); Accessible.name: "Undo routing change" }
+                ToolButton { text: "Redo"; enabled: graph.canRedo; onClicked: graph.redo(); Accessible.name: "Redo routing change" }
                 Item { Layout.fillWidth: true }
                 TextField {
                     id: searchField
@@ -151,14 +159,24 @@ ApplicationWindow {
                         }
 
                         Repeater {
+                            id: cardRepeater
                             model: graph.cards
                             delegate: GraphCard {
                                 required property var item
                                 card: item
                                 selected: graph.selectedKey === item.key
+                                routing: graph.routing
                                 onSelectedRequested: graph.selectCard(item.key)
                                 onToggleRequested: graph.toggleCard(item.key)
                                 onMoved: (x, y) => graph.moveCard(item.key, x, y)
+                                onExpandForRoutingRequested: graph.expandForRouting(item.key)
+                                onRouteStarted: function(portId, x, y) {
+                                    graph.beginRoute(portId, x, y)
+                                    Qt.callLater(window.focusFirstRoutingTarget)
+                                }
+                                onRouteMoved: (x, y) => graph.updateRoute(x, y)
+                                onRouteFinished: (x, y) => graph.finishRoute(x, y)
+                                onRouteTargetRequested: portId => graph.finishRouteToPort(portId)
                             }
                         }
 
@@ -191,8 +209,20 @@ ApplicationWindow {
                     contentY: viewport.contentY
                     mediaFilter: graph.mediaFilter
                     selectedKey: graph.selectedKey
+                    routePreview: graph.routing
                     z: 3
                     onLinkActivated: key => graph.selectLink(key)
+                }
+
+                Rectangle {
+                    visible: graph.noticeText.length > 0
+                    anchors.horizontalCenter: parent.horizontalCenter
+                    anchors.bottom: parent.bottom
+                    anchors.bottomMargin: 16
+                    width: Math.min(parent.width - 220, noticeLabel.implicitWidth + 34)
+                    height: 38; radius: 4
+                    color: "#252d33"; border.color: "#59656f"; z: 6
+                    Text { id: noticeLabel; anchors.centerIn: parent; text: graph.noticeText; color: "#dce1e4"; font.pixelSize: 10 }
                 }
 
                 Rectangle {
@@ -229,14 +259,42 @@ ApplicationWindow {
                 onFocusRequested: graph.focusSelected()
                 onClearFocusRequested: graph.clearFocus()
                 onToggleRequested: key => graph.toggleCard(key)
+                onDisconnectRequested: graph.disconnectSelected()
             }
         }
     }
+
+    Dialog {
+        id: feedbackDialog
+        anchors.centerIn: parent
+        width: 420
+        modal: true
+        title: "Create a feedback link?"
+        standardButtons: Dialog.Ok | Dialog.Cancel
+        closePolicy: Popup.NoAutoClose
+        onAccepted: graph.confirmFeedback()
+        onRejected: graph.cancelFeedback()
+        onOpened: standardButton(Dialog.Ok).text = "Create feedback link"
+        contentItem: Text {
+            width: 360
+            text: "This connection closes a media cycle. PipeWire will delay the return path by one processing cycle. Audio feedback can become loud very quickly."
+            color: "#dce1e4"; wrapMode: Text.Wrap
+        }
+    }
+
+    Shortcut { sequences: [StandardKey.Undo]; onActivated: graph.undo() }
+    Shortcut { sequences: [StandardKey.Redo]; onActivated: graph.redo() }
+    Shortcut { sequence: "Delete"; enabled: graph.selected.selectionKind === "link"; onActivated: graph.disconnectSelected() }
+    Shortcut { sequence: "Escape"; enabled: Boolean(graph.routing.active); onActivated: graph.cancelRoute() }
 
     Connections {
         target: graph
         function onGraphChanged() {
             if (!viewport.fittedOnce && graph.cardCount > 0) Qt.callLater(viewport.fitGraph)
+        }
+        function onFeedbackConfirmationChanged() {
+            if (graph.feedbackConfirmation) feedbackDialog.open()
+            else feedbackDialog.close()
         }
     }
 }

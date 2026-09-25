@@ -2,8 +2,10 @@
 #include "backend/WirePlumberGraphSource.hpp"
 
 #include <wp/wp.h>
+#include <pipewire/permission.h>
 
 #include <charconv>
+#include <memory>
 #include <unordered_map>
 
 namespace wirerunner {
@@ -28,6 +30,11 @@ std::optional<GlobalId> numericProperty(WpPipewireObject *object, const char *ke
   GlobalId result{};
   const auto parsed = std::from_chars(value.data(), value.data() + value.size(), result);
   return parsed.ec == std::errc{} ? std::optional{result} : std::nullopt;
+}
+
+bool booleanProperty(WpPipewireObject *object, const char *key) {
+  const auto value = property(object, key);
+  return value == "true" || value == "1";
 }
 
 std::string nodeState(WpNode *node) {
@@ -67,6 +74,30 @@ void eachObject(WpObjectManager *manager, GType type, Function function) {
   wp_iterator_unref(iterator);
 }
 
+GObject *findObject(WpObjectManager *manager, GType type, GlobalId id) {
+  GObject *result = nullptr;
+  eachObject(manager, type, [&](GObject *object) {
+    if (!result && wp_proxy_get_bound_id(WP_PROXY(object)) == id) result = object;
+  });
+  return result;
+}
+
+struct ActivationData {
+  GraphSource::CommandCallback callback;
+  CommandId commandId{};
+  WpLink *link{};
+};
+
+void linkActivated(GObject *source, GAsyncResult *result, gpointer data) {
+  std::unique_ptr<ActivationData> activation(static_cast<ActivationData *>(data));
+  GError *error = nullptr;
+  const bool accepted = wp_object_activate_finish(WP_OBJECT(source), result, &error);
+  activation->callback({activation->commandId, accepted,
+    accepted ? "Link submitted to PipeWire" : (error ? error->message : "PipeWire rejected the link")});
+  if (error) g_error_free(error);
+  g_object_unref(activation->link);
+}
+
 gboolean quitLoop(gpointer data) {
   g_main_loop_quit(static_cast<GMainLoop *>(data));
   return G_SOURCE_REMOVE;
@@ -91,6 +122,85 @@ void WirePlumberGraphSource::stop() {
     if (context_ && loop_) g_main_context_invoke(context_, quitLoop, loop_);
   }
   thread_.join();
+}
+
+void WirePlumberGraphSource::invoke(std::function<void()> task) {
+  GMainContext *context = nullptr;
+  {
+    std::scoped_lock lock(mutex_);
+    if (context_) context = g_main_context_ref(context_);
+  }
+  if (!context) return;
+  auto *owned = new std::function<void()>(std::move(task));
+  g_main_context_invoke_full(context, G_PRIORITY_DEFAULT, +[](gpointer data) -> gboolean {
+    (*static_cast<std::function<void()> *>(data))();
+    return G_SOURCE_REMOVE;
+  }, owned, +[](gpointer data) { delete static_cast<std::function<void()> *>(data); });
+  g_main_context_unref(context);
+}
+
+void WirePlumberGraphSource::createLink(CreateLinkRequest request, CommandCallback callback) {
+  {
+    std::scoped_lock lock(mutex_);
+    if (!context_) {
+      callback({request.commandId, false, "PipeWire is not connected"});
+      return;
+    }
+  }
+  invoke([this, request, callback = std::move(callback)]() mutable {
+    auto *output = findObject(manager_, WP_TYPE_PORT, request.outputPortId);
+    auto *input = findObject(manager_, WP_TYPE_PORT, request.inputPortId);
+    if (!output || !input || wp_port_get_direction(WP_PORT(output)) != WP_DIRECTION_OUTPUT ||
+        wp_port_get_direction(WP_PORT(input)) != WP_DIRECTION_INPUT ||
+        numericProperty(WP_PIPEWIRE_OBJECT(output), "node.id") != request.outputNodeId ||
+        numericProperty(WP_PIPEWIRE_OBJECT(input), "node.id") != request.inputNodeId) {
+      callback({request.commandId, false, "One of the selected ports is no longer available"});
+      return;
+    }
+    const auto outputNode = std::to_string(request.outputNodeId);
+    const auto outputPort = std::to_string(request.outputPortId);
+    const auto inputNode = std::to_string(request.inputNodeId);
+    const auto inputPort = std::to_string(request.inputPortId);
+    auto *properties = wp_properties_new_empty();
+    wp_properties_set(properties, "link.output.node", outputNode.c_str());
+    wp_properties_set(properties, "link.output.port", outputPort.c_str());
+    wp_properties_set(properties, "link.input.node", inputNode.c_str());
+    wp_properties_set(properties, "link.input.port", inputPort.c_str());
+    wp_properties_set(properties, "object.linger", request.linger ? "true" : "false");
+    wp_properties_set(properties, "wirerunner.created", "true");
+    if (request.feedback) wp_properties_set(properties, "link.feedback", "true");
+    auto *link = wp_link_new_from_factory(core_, "link-factory", properties);
+    if (!link) {
+      callback({request.commandId, false, "PipeWire could not create a link proxy"});
+      return;
+    }
+    auto *activation = new ActivationData{std::move(callback), request.commandId, link};
+    wp_object_activate(WP_OBJECT(link), WP_PROXY_FEATURE_BOUND, nullptr, linkActivated, activation);
+  });
+}
+
+void WirePlumberGraphSource::destroyLink(DestroyLinkRequest request, CommandCallback callback) {
+  {
+    std::scoped_lock lock(mutex_);
+    if (!context_) {
+      callback({request.commandId, false, "PipeWire is not connected"});
+      return;
+    }
+  }
+  invoke([this, request, callback = std::move(callback)]() mutable {
+    auto *object = findObject(manager_, WP_TYPE_LINK, request.linkId);
+    if (!object) {
+      callback({request.commandId, false, "The selected link no longer exists"});
+      return;
+    }
+    auto *link = WP_GLOBAL_PROXY(object);
+    if ((wp_global_proxy_get_permissions(link) & PW_PERM_X) == 0) {
+      callback({request.commandId, false, "PipeWire does not allow this link to be removed"});
+      return;
+    }
+    wp_global_proxy_request_destroy(link);
+    callback({request.commandId, true, "Disconnect submitted to PipeWire"});
+  });
 }
 
 void WirePlumberGraphSource::run(std::stop_token token) {
@@ -157,8 +267,9 @@ void WirePlumberGraphSource::publish() {
   if (snapshotCallback_) snapshotCallback_(std::make_shared<GraphSnapshot>(snapshot()));
 }
 
-GraphSnapshot WirePlumberGraphSource::snapshot() const {
+GraphSnapshot WirePlumberGraphSource::snapshot() {
   GraphSnapshot graph;
+  graph.revision = ++revision_;
   graph.remoteName = wp_core_get_remote_name(core_) ? wp_core_get_remote_name(core_) : "pipewire-0";
   graph.remoteVersion = wp_core_get_remote_version(core_) ? wp_core_get_remote_version(core_) : "unknown";
 
@@ -199,13 +310,16 @@ GraphSnapshot WirePlumberGraphSource::snapshot() const {
       firstProperty(object, {"port.alias", "port.name"}), property(object, "audio.channel"),
       wp_port_get_direction(WP_PORT(value)) == WP_DIRECTION_OUTPUT ? PortDirection::Output : PortDirection::Input,
       nodeMedia.contains(nodeId) ? nodeMedia[nodeId] : classifyMedia({}, property(object, "format.dsp")),
-      property(object, "format.dsp")});
+      property(object, "format.dsp"), wp_global_proxy_get_permissions(WP_GLOBAL_PROXY(value))});
   });
   eachObject(manager_, WP_TYPE_LINK, [&](GObject *value) {
     guint32 outputNode{}, outputPort{}, inputNode{}, inputPort{};
     wp_link_get_linked_object_ids(WP_LINK(value), &outputNode, &outputPort, &inputNode, &inputPort);
+    auto *object = WP_PIPEWIRE_OBJECT(value);
     graph.links.push_back({wp_proxy_get_bound_id(WP_PROXY(value)), outputNode, outputPort, inputNode, inputPort,
-      linkState(WP_LINK(value)), nodeMedia.contains(outputNode) ? nodeMedia[outputNode] : MediaType::Unknown});
+      linkState(WP_LINK(value)), nodeMedia.contains(outputNode) ? nodeMedia[outputNode] : MediaType::Unknown,
+      booleanProperty(object, "link.feedback"), booleanProperty(object, "object.linger"),
+      booleanProperty(object, "wirerunner.created"), wp_global_proxy_get_permissions(WP_GLOBAL_PROXY(value))});
   });
   classifyNodeRoles(graph);
   return graph;

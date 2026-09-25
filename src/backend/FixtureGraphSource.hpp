@@ -9,6 +9,8 @@ public:
   explicit FixtureGraphSource(QString path);
   void start(SnapshotCallback snapshot, StatusCallback status) override;
   void stop() override {}
+  void createLink(CreateLinkRequest request, CommandCallback callback) override;
+  void destroyLink(DestroyLinkRequest request, CommandCallback callback) override;
   static GraphSnapshot load(const QString &path);
 private:
   QString path_;

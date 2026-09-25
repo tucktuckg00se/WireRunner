@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "presentation/GraphController.hpp"
+#include "domain/Routing.hpp"
 
+#include <QDateTime>
+#include <QLineF>
 #include <QMetaObject>
 #include <QThread>
 #include <algorithm>
@@ -13,6 +16,7 @@ namespace {
 constexpr double cardWidth = 272.0;
 constexpr double cardTop = 100.0;
 constexpr double portStep = 28.0;
+constexpr std::uint32_t executePermission = 0100;
 
 QString text(std::string_view value) {
   return QString::fromLatin1(value.data(), static_cast<qsizetype>(value.size()));
@@ -37,13 +41,16 @@ QVariantMap portMap(const GraphPort &port, const GraphSnapshot &snapshot) {
 
 QVariantList portGroups(const GraphCard &card, PortDirection direction) {
   const auto &ports = direction == PortDirection::Input ? card.inputs : card.outputs;
-  std::map<MediaType, int> counts;
-  for (const auto &port : ports) ++counts[port.media];
+  std::map<MediaType, std::vector<const GraphPort *>> grouped;
+  for (const auto &port : ports) grouped[port.media].push_back(&port);
   QVariantList result;
-  for (const auto &[media, count] : counts) {
+  for (const auto &[media, members] : grouped) {
+    const auto count = static_cast<int>(members.size());
     const auto mediaName = text(mediaTypeName(media));
-    result.push_back(QVariantMap{{QStringLiteral("key"), groupKey(qtext(card.key), direction, media)},
+    const auto key = count == 1 ? portKey(members.front()->id) : groupKey(qtext(card.key), direction, media);
+    result.push_back(QVariantMap{{QStringLiteral("key"), key},
       {QStringLiteral("media"), mediaName}, {QStringLiteral("count"), count},
+      {QStringLiteral("id"), count == 1 ? QVariant::fromValue(members.front()->id) : QVariant{}},
       {QStringLiteral("label"), count == 1 ? mediaName : QStringLiteral("%1 %2 ports").arg(count).arg(mediaName)}});
   }
   return result;
@@ -57,7 +64,13 @@ QString primaryMedia(const GraphCard &card) {
 } // namespace
 
 GraphController::GraphController(std::unique_ptr<GraphSource> source, QString layoutPath, QObject *parent)
-  : QObject(parent), source_(std::move(source)), layoutStore_(std::move(layoutPath)), cards_(this), links_(this) {}
+  : QObject(parent), source_(std::move(source)), layoutStore_(std::move(layoutPath)), cards_(this), links_(this) {
+  commandTimer_.setSingleShot(true);
+  commandTimer_.setInterval(4000);
+  connect(&commandTimer_, &QTimer::timeout, this, [this] {
+    if (pending_) failPending(QStringLiteral("PipeWire did not confirm the graph change"));
+  });
+}
 
 GraphController::~GraphController() { source_->stop(); }
 
@@ -74,11 +87,14 @@ void GraphController::start() {
 }
 
 void GraphController::applySnapshot(std::shared_ptr<const GraphSnapshot> snapshot) {
+  const auto previousRemote = remoteName_;
   snapshot_ = std::move(snapshot);
   composed_ = composeGraph(*snapshot_);
   const auto nextRemote = qtext(snapshot_->remoteName.empty() ? std::string("pipewire-0") : snapshot_->remoteName);
   if (!remoteName_.isEmpty() && remoteName_ != nextRemote) {
-    cardStates_.clear(); focusCards_.clear(); clearSelection();
+    cardStates_.clear(); focusCards_.clear(); clearSelection(); cancelRoute();
+    pending_.reset(); history_.clear(); historyCursor_ = 0;
+    emit historyChanged(); emit commandPendingChanged();
   }
   remoteName_ = nextRemote;
   const auto automatic = layoutGraph(composed_, snapshot_->links);
@@ -106,12 +122,33 @@ void GraphController::applySnapshot(std::shared_ptr<const GraphSnapshot> snapsho
     if (!present.contains(*it)) it = focusCards_.erase(it); else ++it;
   }
   remoteSummary_ = qtext(snapshot_->remoteName + "  /  " + snapshot_->remoteVersion);
+  resolvePending();
+
+  if (!previousRemote.isEmpty() && previousRemote == nextRemote && !history_.isEmpty() &&
+      historyCursor_ == history_.size()) {
+    const auto &last = history_.back();
+    if (last.kind == HistoryKind::Destroyed &&
+        QDateTime::currentMSecsSinceEpoch() - last.recordedAt < 2500 &&
+        std::ranges::any_of(snapshot_->links, [&](const GraphLink &link) {
+          return link.id != last.link.id && link.outputPortId == last.link.outputPortId &&
+            link.inputPortId == last.link.inputPortId;
+        })) {
+      history_.removeLast();
+      historyCursor_ = std::min(historyCursor_, history_.size());
+      setNotice(QStringLiteral("This route was restored by session policy or another client."));
+      emit historyChanged();
+    }
+  }
   rebuildPresentation();
 }
 
 void GraphController::applyStatus(SourceStatus status) {
   statusText_ = qtext(status.message);
   connected_ = status.state == SourceState::Ready;
+  if (!connected_) {
+    cancelRoute();
+    if (pending_) failPending(QStringLiteral("The PipeWire connection changed before the edit completed"));
+  }
   emit statusChanged();
 }
 
@@ -187,7 +224,10 @@ void GraphController::rebuildPresentation() {
         const auto port = ports.at(row).toMap();
         anchors.push_back(QVariantMap{{QStringLiteral("key"), port.value(QStringLiteral("key"))},
           {QStringLiteral("x"), state.position.x() + (direction == PortDirection::Input ? 0.0 : cardWidth)},
-          {QStringLiteral("y"), state.position.y() + cardTop + 9.0 + static_cast<double>(row) * portStep}});
+          {QStringLiteral("y"), state.position.y() + cardTop + 9.0 + static_cast<double>(row) * portStep},
+          {QStringLiteral("cardKey"), key}, {QStringLiteral("direction"), port.value(QStringLiteral("direction"))},
+          {QStringLiteral("media"), port.value(QStringLiteral("media"))}, {QStringLiteral("count"), 1},
+          {QStringLiteral("portId"), port.value(QStringLiteral("id"))}});
       }
     };
     const auto addGroupAnchors = [&](const QVariantList &groups, PortDirection direction) {
@@ -195,7 +235,12 @@ void GraphController::rebuildPresentation() {
         const auto group = groups.at(row).toMap();
         anchors.push_back(QVariantMap{{QStringLiteral("key"), group.value(QStringLiteral("key"))},
           {QStringLiteral("x"), state.position.x() + (direction == PortDirection::Input ? 0.0 : cardWidth)},
-          {QStringLiteral("y"), state.position.y() + cardTop + 9.0 + static_cast<double>(row) * portStep}});
+          {QStringLiteral("y"), state.position.y() + cardTop + 9.0 + static_cast<double>(row) * portStep},
+          {QStringLiteral("cardKey"), key},
+          {QStringLiteral("direction"), direction == PortDirection::Input ? QStringLiteral("input") : QStringLiteral("output")},
+          {QStringLiteral("media"), group.value(QStringLiteral("media"))},
+          {QStringLiteral("count"), group.value(QStringLiteral("count"))},
+          {QStringLiteral("portId"), group.value(QStringLiteral("id"))}});
       }
     };
     if (state.expanded) {
@@ -207,6 +252,17 @@ void GraphController::rebuildPresentation() {
 
   std::unordered_map<GlobalId, const GraphPort *> ports;
   for (const auto &port : snapshot_->ports) ports[port.id] = &port;
+  const auto anchorKey = [&](const QString &cardKey, PortDirection direction, const GraphPort *port,
+                             GlobalId portId, MediaType media) {
+    if (cardStates_.value(cardKey).expanded) return portKey(portId);
+    const auto card = std::ranges::find(composed_.cards, cardKey.toStdString(), &GraphCard::key);
+    if (card != composed_.cards.end()) {
+      const auto &members = direction == PortDirection::Input ? card->inputs : card->outputs;
+      const auto count = std::ranges::count(members, media, &GraphPort::media);
+      if (count == 1) return portKey(portId);
+    }
+    return groupKey(cardKey, direction, port ? port->media : media);
+  };
   QList<QVariantMap> links;
   for (const auto &link : snapshot_->links) {
     if (!nodeCards.contains(link.outputNodeId) || !nodeCards.contains(link.inputNodeId)) continue;
@@ -219,18 +275,33 @@ void GraphController::rebuildPresentation() {
     QVariantMap item{{QStringLiteral("key"), QStringLiteral("link:%1").arg(link.id)}, {QStringLiteral("id"), link.id},
       {QStringLiteral("outputCardKey"), outputCard}, {QStringLiteral("inputCardKey"), inputCard},
       {QStringLiteral("outputNodeId"), link.outputNodeId}, {QStringLiteral("inputNodeId"), link.inputNodeId},
-      {QStringLiteral("outputAnchorKey"), cardStates_.value(outputCard).expanded ? portKey(link.outputPortId)
-        : groupKey(outputCard, PortDirection::Output, outputMedia)},
-      {QStringLiteral("inputAnchorKey"), cardStates_.value(inputCard).expanded ? portKey(link.inputPortId)
-        : groupKey(inputCard, PortDirection::Input, inputMedia)},
+      {QStringLiteral("outputAnchorKey"), anchorKey(outputCard, PortDirection::Output, outputPort, link.outputPortId, outputMedia)},
+      {QStringLiteral("inputAnchorKey"), anchorKey(inputCard, PortDirection::Input, inputPort, link.inputPortId, inputMedia)},
       {QStringLiteral("fromName"), cardMaps.value(outputCard).value(QStringLiteral("title"))},
       {QStringLiteral("toName"), cardMaps.value(inputCard).value(QStringLiteral("title"))},
       {QStringLiteral("outputPortName"), outputPort ? qtext(outputPort->name) : QString{}},
       {QStringLiteral("inputPortName"), inputPort ? qtext(inputPort->name) : QString{}},
       {QStringLiteral("media"), text(mediaTypeName(link.media))}, {QStringLiteral("state"), qtext(link.state)},
+      {QStringLiteral("feedback"), link.feedback}, {QStringLiteral("linger"), link.linger},
+      {QStringLiteral("createdByWireRunner"), link.createdByWireRunner},
+      {QStringLiteral("canDestroy"), (link.permissions & executePermission) != 0},
       {QStringLiteral("focused"), focusCards_.isEmpty() ||
         (focusCards_.contains(outputCard) && focusCards_.contains(inputCard))}};
     links.push_back(item);
+  }
+
+  if (pending_ && pending_->creating) {
+    const auto &link = pending_->link;
+    if (nodeCards.contains(link.outputNodeId) && nodeCards.contains(link.inputNodeId) &&
+        ports.contains(link.outputPortId) && ports.contains(link.inputPortId)) {
+      const auto outputCard = nodeCards.value(link.outputNodeId);
+      const auto inputCard = nodeCards.value(link.inputNodeId);
+      links.push_back(QVariantMap{{QStringLiteral("key"), QStringLiteral("pending:%1").arg(pending_->commandId)},
+        {QStringLiteral("outputAnchorKey"), anchorKey(outputCard, PortDirection::Output, ports.at(link.outputPortId), link.outputPortId, link.media)},
+        {QStringLiteral("inputAnchorKey"), anchorKey(inputCard, PortDirection::Input, ports.at(link.inputPortId), link.inputPortId, link.media)},
+        {QStringLiteral("media"), text(mediaTypeName(link.media))}, {QStringLiteral("state"), QStringLiteral("pending")},
+        {QStringLiteral("pending"), true}, {QStringLiteral("focused"), true}});
+    }
   }
 
   cards_.setItems(std::move(cards));
@@ -242,6 +313,7 @@ void GraphController::rebuildPresentation() {
   cardRects_ = std::move(cardRects);
   canvasWidth_ = maximumX;
   canvasHeight_ = maximumY;
+  rebuildRouting();
   updateSelection();
   emit graphChanged();
 }
@@ -350,6 +422,292 @@ QVariantMap GraphController::findCard(const QString &query) {
     return item;
   }
   statusText_ = QStringLiteral("No object matches “%1”").arg(term); emit statusChanged(); return {};
+}
+
+bool GraphController::canUndo() const { return !pending_ && historyCursor_ > 0; }
+bool GraphController::canRedo() const { return !pending_ && historyCursor_ < history_.size(); }
+
+void GraphController::setNotice(QString message) {
+  if (noticeText_ == message) return;
+  noticeText_ = std::move(message);
+  emit noticeChanged();
+}
+
+void GraphController::expandForRouting(const QString &cardKey) {
+  auto found = cardStates_.find(cardKey);
+  if (found == cardStates_.end() || found->expanded) return;
+  found->expanded = true;
+  saveCard(cardKey);
+  setNotice(QStringLiteral("Choose an exact port to make this route."));
+  rebuildPresentation();
+}
+
+void GraphController::beginRoute(quint32 outputPortId, double x, double y) {
+  if (!snapshot_ || pending_) return;
+  const auto *port = findPort(*snapshot_, outputPortId);
+  if (!port || port->direction != PortDirection::Output) {
+    setNotice(QStringLiteral("A route must start at an output port."));
+    return;
+  }
+  routeOutputPort_ = outputPortId;
+  routeTargetPort_.reset();
+  routeCursor_ = {x, y};
+  feedbackConfirmation_ = false;
+  rebuildRouting();
+}
+
+void GraphController::updateRoute(double x, double y) {
+  if (!snapshot_ || !routeOutputPort_ || feedbackConfirmation_) return;
+  routeCursor_ = {x, y};
+  routeTargetPort_.reset();
+  QVariantMap closest;
+  double best = 24.0;
+  for (const auto &value : anchors_) {
+    const auto anchor = value.toMap();
+    if (anchor.value(QStringLiteral("direction")).toString() != QStringLiteral("input")) continue;
+    const QLineF distance(routeCursor_, {anchor.value(QStringLiteral("x")).toDouble(),
+      anchor.value(QStringLiteral("y")).toDouble()});
+    if (distance.length() < best) { best = distance.length(); closest = anchor; }
+  }
+  if (!closest.isEmpty()) {
+    if (closest.value(QStringLiteral("count")).toInt() > 1) {
+      const auto cardKey = closest.value(QStringLiteral("cardKey")).toString();
+      expandForRouting(cardKey);
+      updateRoute(x, y);
+      return;
+    }
+    const auto id = closest.value(QStringLiteral("portId")).toUInt();
+    if (id != 0) routeTargetPort_ = id;
+  }
+  rebuildRouting();
+}
+
+void GraphController::finishRoute(double x, double y) {
+  if (!routeOutputPort_ || feedbackConfirmation_) return;
+  updateRoute(x, y);
+  if (!routeTargetPort_) { cancelRoute(); return; }
+  finishRouteToPort(*routeTargetPort_);
+}
+
+void GraphController::finishRouteToPort(quint32 inputPortId) {
+  if (!snapshot_ || !routeOutputPort_ || pending_) return;
+  routeTargetPort_ = inputPortId;
+  const auto compatibility = assessLink(*snapshot_, *routeOutputPort_, inputPortId);
+  if (!compatibility.compatible) {
+    setNotice(qtext(compatibility.reason));
+    rebuildRouting();
+    return;
+  }
+  if (compatibility.probableCycle) {
+    feedbackConfirmation_ = true;
+    setNotice(QStringLiteral("This closes a media cycle. Confirm it as a feedback link."));
+    rebuildRouting();
+    emit feedbackConfirmationChanged();
+    return;
+  }
+  const auto output = *routeOutputPort_;
+  cancelRoute();
+  submitCreate(output, inputPortId, false);
+}
+
+void GraphController::cancelRoute() {
+  const bool routingChangedValue = routeOutputPort_.has_value() || routeTargetPort_.has_value();
+  const bool confirmationChanged = feedbackConfirmation_;
+  routeOutputPort_.reset(); routeTargetPort_.reset(); routing_.clear(); feedbackConfirmation_ = false;
+  if (routingChangedValue) emit routingChanged();
+  if (confirmationChanged) emit feedbackConfirmationChanged();
+}
+
+void GraphController::confirmFeedback() {
+  if (!feedbackConfirmation_ || !routeOutputPort_ || !routeTargetPort_) return;
+  const auto output = *routeOutputPort_;
+  const auto input = *routeTargetPort_;
+  cancelRoute();
+  submitCreate(output, input, true);
+}
+
+void GraphController::cancelFeedback() { cancelRoute(); }
+
+void GraphController::rebuildRouting() {
+  QVariantMap next;
+  if (snapshot_ && routeOutputPort_) {
+    QVariantList compatibleInputs;
+    QVariantMap incompatibleInputs;
+    QVariantMap compatibleNotes;
+    for (const auto &port : snapshot_->ports) {
+      if (port.direction != PortDirection::Input) continue;
+      const auto result = assessLink(*snapshot_, *routeOutputPort_, port.id);
+      if (result.compatible) {
+        compatibleInputs.push_back(port.id);
+        if (!result.reason.empty()) compatibleNotes.insert(QString::number(port.id), qtext(result.reason));
+      }
+      else incompatibleInputs.insert(QString::number(port.id), qtext(result.reason));
+    }
+    QString reason;
+    bool valid = false;
+    bool cycle = false;
+    if (routeTargetPort_) {
+      const auto result = assessLink(*snapshot_, *routeOutputPort_, *routeTargetPort_);
+      valid = result.compatible;
+      cycle = result.probableCycle;
+      reason = qtext(result.reason);
+    }
+    const auto *output = findPort(*snapshot_, *routeOutputPort_);
+    next = {{QStringLiteral("active"), true}, {QStringLiteral("outputPortId"), *routeOutputPort_},
+      {QStringLiteral("outputAnchorKey"), portKey(*routeOutputPort_)},
+      {QStringLiteral("targetPortId"), routeTargetPort_.value_or(0)},
+      {QStringLiteral("targetAnchorKey"), routeTargetPort_ ? portKey(*routeTargetPort_) : QString{}},
+      {QStringLiteral("cursorX"), routeCursor_.x()}, {QStringLiteral("cursorY"), routeCursor_.y()},
+      {QStringLiteral("media"), output ? text(mediaTypeName(output->media)) : QStringLiteral("unknown")},
+      {QStringLiteral("compatibleInputs"), compatibleInputs},
+      {QStringLiteral("incompatibleInputs"), incompatibleInputs},
+      {QStringLiteral("compatibleNotes"), compatibleNotes}, {QStringLiteral("validTarget"), valid},
+      {QStringLiteral("cycle"), cycle}, {QStringLiteral("reason"), reason}};
+  }
+  if (routing_ == next) return;
+  routing_ = std::move(next);
+  emit routingChanged();
+}
+
+void GraphController::submitCreate(GlobalId outputPortId, GlobalId inputPortId, bool feedback,
+                                   OperationIntent intent) {
+  if (!snapshot_ || pending_) return;
+  const auto compatibility = assessLink(*snapshot_, outputPortId, inputPortId);
+  if (!compatibility.compatible) { setNotice(qtext(compatibility.reason)); return; }
+  const auto *output = findPort(*snapshot_, outputPortId);
+  const auto *input = findPort(*snapshot_, inputPortId);
+  if (!output || !input) return;
+  GraphLink link{.outputNodeId = output->nodeId, .outputPortId = output->id,
+    .inputNodeId = input->nodeId, .inputPortId = input->id, .state = "pending",
+    .media = output->media, .feedback = feedback, .linger = true, .createdByWireRunner = true};
+  const auto commandId = nextCommandId_++;
+  pending_ = PendingOperation{commandId, true, link, intent};
+  emit commandPendingChanged(); emit historyChanged();
+  setNotice(feedback ? QStringLiteral("Creating feedback link…") : QStringLiteral("Creating link…"));
+  commandTimer_.start();
+  rebuildPresentation();
+  CreateLinkRequest request{commandId, snapshot_->revision, output->nodeId, output->id,
+    input->nodeId, input->id, feedback, true};
+  source_->createLink(request, [this](CommandResult result) {
+    QMetaObject::invokeMethod(this, [this, result = std::move(result)] { applyCommandResult(result); },
+      Qt::QueuedConnection);
+  });
+}
+
+void GraphController::submitDestroy(const GraphLink &link, OperationIntent intent) {
+  if (!snapshot_ || pending_) return;
+  if ((link.permissions & executePermission) == 0) {
+    setNotice(QStringLiteral("PipeWire does not allow this link to be removed."));
+    return;
+  }
+  const auto commandId = nextCommandId_++;
+  pending_ = PendingOperation{commandId, false, link, intent};
+  emit commandPendingChanged(); emit historyChanged();
+  setNotice(QStringLiteral("Disconnecting link…"));
+  commandTimer_.start();
+  rebuildPresentation();
+  source_->destroyLink({commandId, snapshot_->revision, link.id}, [this](CommandResult result) {
+    QMetaObject::invokeMethod(this, [this, result = std::move(result)] { applyCommandResult(result); },
+      Qt::QueuedConnection);
+  });
+}
+
+void GraphController::applyCommandResult(CommandResult result) {
+  if (!pending_ || pending_->commandId != result.commandId) return;
+  if (!result.accepted) { failPending(qtext(result.message)); return; }
+  setNotice(qtext(result.message));
+}
+
+void GraphController::resolvePending() {
+  if (!snapshot_ || !pending_) return;
+  if (pending_->creating) {
+    const auto found = std::ranges::find_if(snapshot_->links, [&](const GraphLink &link) {
+      return link.outputPortId == pending_->link.outputPortId && link.inputPortId == pending_->link.inputPortId;
+    });
+    if (found != snapshot_->links.end()) completePending(*found);
+    return;
+  }
+  if (findLink(*snapshot_, pending_->link.id)) return;
+  const auto replacement = std::ranges::find_if(snapshot_->links, [&](const GraphLink &link) {
+    return link.outputPortId == pending_->link.outputPortId && link.inputPortId == pending_->link.inputPortId;
+  });
+  if (replacement != snapshot_->links.end()) {
+    commandTimer_.stop(); pending_.reset();
+    emit commandPendingChanged(); emit historyChanged();
+    setNotice(QStringLiteral("This route was restored by session policy or another client."));
+    return;
+  }
+  completePending(pending_->link);
+}
+
+void GraphController::completePending(const GraphLink &observed) {
+  if (!pending_) return;
+  const auto operation = *pending_;
+  commandTimer_.stop(); pending_.reset();
+  if (operation.intent == OperationIntent::Normal) {
+    while (history_.size() > historyCursor_) history_.removeLast();
+    history_.push_back({operation.creating ? HistoryKind::Created : HistoryKind::Destroyed,
+      observed, QDateTime::currentMSecsSinceEpoch()});
+    if (history_.size() > 50) history_.removeFirst();
+    historyCursor_ = history_.size();
+  } else if (operation.intent == OperationIntent::Undo) {
+    historyCursor_ = std::max<qsizetype>(0, historyCursor_ - 1);
+  } else {
+    historyCursor_ = std::min(history_.size(), historyCursor_ + 1);
+  }
+  if (!operation.creating && selectedKind_ == QStringLiteral("link")) clearSelection();
+  setNotice(operation.creating ? QStringLiteral("Link created. Undo is available.")
+                               : QStringLiteral("Link disconnected. Undo is available."));
+  emit commandPendingChanged(); emit historyChanged();
+}
+
+void GraphController::failPending(const QString &message) {
+  if (!pending_) return;
+  commandTimer_.stop(); pending_.reset();
+  setNotice(message);
+  emit commandPendingChanged(); emit historyChanged();
+  rebuildPresentation();
+}
+
+void GraphController::disconnectSelected() {
+  if (!snapshot_ || selectedKind_ != QStringLiteral("link") || pending_) return;
+  const auto id = selected_.value(QStringLiteral("id")).toUInt();
+  const auto *link = findLink(*snapshot_, id);
+  if (!link) { setNotice(QStringLiteral("The selected link no longer exists.")); return; }
+  submitDestroy(*link);
+}
+
+void GraphController::undo() {
+  if (!canUndo() || !snapshot_) return;
+  const auto &action = history_.at(historyCursor_ - 1);
+  if (action.kind == HistoryKind::Created) {
+    auto found = std::ranges::find(snapshot_->links, action.link.id, &GraphLink::id);
+    if (found == snapshot_->links.end()) found = std::ranges::find_if(snapshot_->links, [&](const GraphLink &link) {
+      return link.outputPortId == action.link.outputPortId && link.inputPortId == action.link.inputPortId;
+    });
+    if (found == snapshot_->links.end()) {
+      --historyCursor_; setNotice(QStringLiteral("That link is already gone.")); emit historyChanged(); return;
+    }
+    submitDestroy(*found, OperationIntent::Undo);
+  } else {
+    submitCreate(action.link.outputPortId, action.link.inputPortId, action.link.feedback, OperationIntent::Undo);
+  }
+}
+
+void GraphController::redo() {
+  if (!canRedo() || !snapshot_) return;
+  const auto &action = history_.at(historyCursor_);
+  if (action.kind == HistoryKind::Created) {
+    submitCreate(action.link.outputPortId, action.link.inputPortId, action.link.feedback, OperationIntent::Redo);
+  } else {
+    const auto found = std::ranges::find_if(snapshot_->links, [&](const GraphLink &link) {
+      return link.outputPortId == action.link.outputPortId && link.inputPortId == action.link.inputPortId;
+    });
+    if (found == snapshot_->links.end()) {
+      ++historyCursor_; setNotice(QStringLiteral("That link is already gone.")); emit historyChanged(); return;
+    }
+    submitDestroy(*found, OperationIntent::Redo);
+  }
 }
 
 void GraphController::saveCard(const QString &key) {

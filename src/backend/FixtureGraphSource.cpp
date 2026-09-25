@@ -30,6 +30,7 @@ GraphSnapshot FixtureGraphSource::load(const QString &path) {
   if (root.value("version").toInt() != 1) throw std::runtime_error("Unsupported fixture version");
 
   GraphSnapshot out;
+  out.revision = 1;
   out.remoteName = text(root, "remoteName");
   out.remoteVersion = text(root, "remoteVersion");
   for (const auto value : root.value("clients").toArray()) {
@@ -70,5 +71,13 @@ void FixtureGraphSource::start(SnapshotCallback snapshot, StatusCallback status)
   } catch (const std::exception &error) {
     status({SourceState::Error, error.what()});
   }
+}
+
+void FixtureGraphSource::createLink(CreateLinkRequest request, CommandCallback callback) {
+  callback({request.commandId, false, "The demonstration graph is read-only"});
+}
+
+void FixtureGraphSource::destroyLink(DestroyLinkRequest request, CommandCallback callback) {
+  callback({request.commandId, false, "The demonstration graph is read-only"});
 }
 } // namespace wirerunner

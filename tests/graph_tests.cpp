@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include "backend/FixtureGraphSource.hpp"
 #include "domain/Graph.hpp"
+#include "domain/Routing.hpp"
 #include "presentation/GraphController.hpp"
 #include "presentation/LayoutStore.hpp"
 #include "presentation/StableListModel.hpp"
@@ -20,9 +21,25 @@ public:
   }
   void stop() override {}
   void publish(GraphSnapshot value) { snapshot_(std::make_shared<GraphSnapshot>(std::move(value))); }
+  void createLink(CreateLinkRequest request, CommandCallback callback) override {
+    lastCreate = request; command_ = std::move(callback);
+  }
+  void destroyLink(DestroyLinkRequest request, CommandCallback callback) override {
+    lastDestroy = request; command_ = std::move(callback);
+  }
+  void respond(bool accepted, std::string message = {}) {
+    QVERIFY(command_);
+    const auto id = lastCreate.commandId != 0 && lastCreate.commandId >= lastDestroy.commandId
+      ? lastCreate.commandId : lastDestroy.commandId;
+    auto callback = std::move(command_);
+    callback({id, accepted, std::move(message)});
+  }
+  CreateLinkRequest lastCreate;
+  DestroyLinkRequest lastDestroy;
 private:
   SnapshotCallback snapshot_;
   StatusCallback status_;
+  CommandCallback command_;
 };
 
 class GraphTests final : public QObject {
@@ -120,6 +137,134 @@ private slots:
       if (controller.cards()->get(row).value("visible").toBool()) ++visibleCards;
     QCOMPARE(visibleCards, 2);
     QCOMPARE(controller.cardRects().size(), 2);
+  }
+
+  void validatesRoutesAndDetectsCycles() {
+    GraphSnapshot graph;
+    graph.nodes = {
+      {1, "", "", "", "", "", MediaType::Audio, NodeRole::Processor, std::nullopt, std::nullopt},
+      {2, "", "", "", "", "", MediaType::Audio, NodeRole::Processor, std::nullopt, std::nullopt},
+      {3, "", "", "", "", "", MediaType::Video, NodeRole::Processor, std::nullopt, std::nullopt}
+    };
+    graph.ports = {
+      {11, 1, "", "", PortDirection::Output, MediaType::Audio, "", 0},
+      {21, 2, "", "", PortDirection::Input, MediaType::Audio, "", 0},
+      {22, 2, "", "", PortDirection::Output, MediaType::Audio, "", 0},
+      {12, 1, "", "", PortDirection::Input, MediaType::Audio, "", 0},
+      {31, 3, "", "", PortDirection::Input, MediaType::Video, "", 0}
+    };
+    auto result = assessLink(graph, 11, 21);
+    QVERIFY(result.compatible);
+    QVERIFY(!result.probableCycle);
+    QVERIFY(!assessLink(graph, 11, 31).compatible);
+
+    graph.links.push_back({101, 1, 11, 2, 21, "active", MediaType::Audio});
+    QVERIFY(!assessLink(graph, 11, 21).compatible);
+    result = assessLink(graph, 22, 12);
+    QVERIFY(result.compatible);
+    QVERIFY(result.probableCycle);
+  }
+
+  void routesAndUndoesOnlyAfterObservedSnapshots() {
+    QTemporaryDir directory;
+    auto source = std::make_unique<ControllableGraphSource>();
+    auto *backend = source.get();
+    GraphController controller(std::move(source), directory.filePath("layout.json"));
+    controller.start();
+    GraphSnapshot graph;
+    graph.revision = 1;
+    graph.remoteName = "pipewire-0";
+    graph.nodes = {
+      {1, "Source", "", "source", "", "", MediaType::Audio, NodeRole::Processor, std::nullopt, std::nullopt},
+      {2, "Sink", "", "sink", "", "", MediaType::Audio, NodeRole::Processor, std::nullopt, std::nullopt}
+    };
+    graph.ports = {
+      {11, 1, "out", "", PortDirection::Output, MediaType::Audio, "", 0},
+      {21, 2, "in", "", PortDirection::Input, MediaType::Audio, "", 0}
+    };
+    backend->publish(graph);
+    controller.beginRoute(11, 100, 100);
+    controller.finishRouteToPort(21);
+    QVERIFY(controller.commandPending());
+    QVERIFY(!controller.canUndo());
+    QCOMPARE(backend->lastCreate.outputPortId, GlobalId{11});
+    QCOMPARE(backend->lastCreate.inputPortId, GlobalId{21});
+    QVERIFY(backend->lastCreate.linger);
+    backend->respond(true, "accepted");
+    graph.revision = 2;
+    graph.links.push_back({101, 1, 11, 2, 21, "active", MediaType::Audio, false, true, true, 0100});
+    backend->publish(graph);
+    QTRY_VERIFY(controller.canUndo());
+
+    controller.undo();
+    QCOMPARE(backend->lastDestroy.linkId, GlobalId{101});
+    backend->respond(true, "accepted");
+    graph.revision = 3;
+    graph.links.clear();
+    backend->publish(graph);
+    QTRY_VERIFY(controller.canRedo());
+  }
+
+  void requiresConfirmationForFeedbackLinks() {
+    QTemporaryDir directory;
+    auto source = std::make_unique<ControllableGraphSource>();
+    auto *backend = source.get();
+    GraphController controller(std::move(source), directory.filePath("layout.json"));
+    controller.start();
+    GraphSnapshot graph;
+    graph.revision = 1;
+    graph.remoteName = "pipewire-0";
+    graph.nodes = {
+      {1, "First", "", "first", "", "", MediaType::Audio, NodeRole::Processor, std::nullopt, std::nullopt},
+      {2, "Second", "", "second", "", "", MediaType::Audio, NodeRole::Processor, std::nullopt, std::nullopt}
+    };
+    graph.ports = {
+      {11, 1, "out", "", PortDirection::Output, MediaType::Audio, "", 0100},
+      {12, 1, "in", "", PortDirection::Input, MediaType::Audio, "", 0100},
+      {21, 2, "in", "", PortDirection::Input, MediaType::Audio, "", 0100},
+      {22, 2, "out", "", PortDirection::Output, MediaType::Audio, "", 0100}
+    };
+    graph.links.push_back({101, 1, 11, 2, 21, "active", MediaType::Audio, false, true, false, 0100});
+    backend->publish(graph);
+    controller.beginRoute(22, 100, 100);
+    controller.finishRouteToPort(12);
+    QVERIFY(controller.feedbackConfirmation());
+    QVERIFY(!controller.commandPending());
+    QCOMPARE(backend->lastCreate.commandId, CommandId{0});
+    controller.confirmFeedback();
+    QVERIFY(controller.commandPending());
+    QVERIFY(backend->lastCreate.feedback);
+  }
+
+  void reportsPolicyRestoredRoutesWithoutFightingThem() {
+    QTemporaryDir directory;
+    auto source = std::make_unique<ControllableGraphSource>();
+    auto *backend = source.get();
+    GraphController controller(std::move(source), directory.filePath("layout.json"));
+    controller.start();
+    GraphSnapshot graph;
+    graph.revision = 1;
+    graph.remoteName = "pipewire-0";
+    graph.nodes = {
+      {1, "Source", "", "source", "", "", MediaType::Audio, NodeRole::Processor, std::nullopt, std::nullopt},
+      {2, "Sink", "", "sink", "", "", MediaType::Audio, NodeRole::Processor, std::nullopt, std::nullopt}
+    };
+    graph.ports = {
+      {11, 1, "out", "", PortDirection::Output, MediaType::Audio, "", 0100},
+      {21, 2, "in", "", PortDirection::Input, MediaType::Audio, "", 0100}
+    };
+    graph.links.push_back({101, 1, 11, 2, 21, "active", MediaType::Audio, false, true, false, 0100});
+    backend->publish(graph);
+    controller.selectLink(QStringLiteral("link:101"));
+    controller.disconnectSelected();
+    QCOMPARE(backend->lastDestroy.linkId, GlobalId{101});
+    backend->respond(true, "accepted");
+    graph.revision = 2;
+    graph.links = {{102, 1, 11, 2, 21, "active", MediaType::Audio, false, true, false, 0100}};
+    backend->publish(graph);
+    QTRY_VERIFY(!controller.commandPending());
+    QVERIFY(!controller.canUndo());
+    QVERIFY(controller.noticeText().contains(QStringLiteral("restored")));
   }
 
   void persistsStableCardLayout() {
@@ -270,5 +415,5 @@ private slots:
   }
 };
 
-QTEST_APPLESS_MAIN(GraphTests)
+QTEST_GUILESS_MAIN(GraphTests)
 #include "graph_tests.moc"

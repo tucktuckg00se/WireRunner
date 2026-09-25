@@ -10,6 +10,7 @@ Rectangle {
     signal focusRequested
     signal clearFocusRequested
     signal toggleRequested(string key)
+    signal disconnectRequested
 
     color: "#1d2328"
     border.color: "#3c4650"
@@ -111,7 +112,23 @@ Rectangle {
                 Text { Layout.fillWidth: true; text: root.selection.outputPortName || "Unknown output"; color: "#dce1e4"; wrapMode: Text.Wrap }
                 Rectangle { Layout.fillWidth: true; height: 1; color: "#39434c" }
                 Text { Layout.fillWidth: true; text: root.selection.inputPortName || "Unknown input"; color: "#dce1e4"; wrapMode: Text.Wrap }
-                Text { Layout.fillWidth: true; text: "This is a live PipeWire link. Editing arrives in the next milestone."; color: "#83909a"; font.pixelSize: 10; wrapMode: Text.Wrap }
+                GridLayout {
+                    columns: 2; Layout.fillWidth: true
+                    Text { text: "Lifetime"; color: "#83909a"; font.pixelSize: 10 }
+                    Text { text: root.selection.linger ? "Until removed" : "Owner session"; color: "#d6dce0"; Layout.alignment: Qt.AlignRight }
+                    Text { text: "Feedback"; color: "#83909a"; font.pixelSize: 10 }
+                    Text { text: root.selection.feedback ? "One-cycle delay" : "No"; color: "#d6dce0"; Layout.alignment: Qt.AlignRight }
+                    Text { text: "Created by"; color: "#83909a"; font.pixelSize: 10 }
+                    Text { text: root.selection.createdByWireRunner ? "WireRunner" : "PipeWire client or policy"; color: "#d6dce0"; Layout.alignment: Qt.AlignRight }
+                }
+                Button {
+                    Layout.fillWidth: true
+                    text: "Disconnect"
+                    enabled: root.selection.canDestroy !== false
+                    onClicked: root.disconnectRequested()
+                    Accessible.description: "Remove only this exact PipeWire link"
+                }
+                Text { visible: root.selection.canDestroy === false; Layout.fillWidth: true; text: "PipeWire does not grant permission to remove this link."; color: "#e6b765"; font.pixelSize: 10; wrapMode: Text.Wrap }
             }
             Item { Layout.fillHeight: true; Layout.minimumHeight: 20 }
         }

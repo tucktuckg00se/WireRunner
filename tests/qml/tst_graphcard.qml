@@ -13,10 +13,10 @@ TestCase {
         state: "running", media: "audio", mediaTypes: ["audio"],
         x: 30, y: 30, width: 272, height: 154, expanded: false,
         visible: true, focused: true, nodeCount: 1, inputCount: 2, outputCount: 1,
-        inputs: [{name: "playback", channel: "FL", media: "audio"}],
-        outputs: [{name: "capture", channel: "FR", media: "audio"}],
-        inputGroups: [{label: "2 audio ports", media: "audio"}],
-        outputGroups: [{label: "audio", media: "audio"}]
+        inputs: [{id: 11, name: "playback", channel: "FL", media: "audio"}],
+        outputs: [{id: 12, name: "capture", channel: "FR", media: "audio"}],
+        inputGroups: [{label: "2 audio ports", media: "audio", count: 2}],
+        outputGroups: [{id: 12, label: "audio", media: "audio", count: 1}]
     })
 
     Window {
@@ -33,6 +33,10 @@ TestCase {
     SignalSpy { id: selectedSpy; target: card; signalName: "selectedRequested" }
     SignalSpy { id: toggleSpy; target: card; signalName: "toggleRequested" }
     SignalSpy { id: movedSpy; target: card; signalName: "moved" }
+    SignalSpy { id: expandRouteSpy; target: card; signalName: "expandForRoutingRequested" }
+    SignalSpy { id: routeStartedSpy; target: card; signalName: "routeStarted" }
+    SignalSpy { id: routeMovedSpy; target: card; signalName: "routeMoved" }
+    SignalSpy { id: routeFinishedSpy; target: card; signalName: "routeFinished" }
 
     function initTestCase() {
         verify(card.visible)
@@ -43,6 +47,10 @@ TestCase {
         selectedSpy.clear()
         toggleSpy.clear()
         movedSpy.clear()
+        expandRouteSpy.clear()
+        routeStartedSpy.clear()
+        routeMovedSpy.clear()
+        routeFinishedSpy.clear()
     }
 
     function test_pointerSelectsCanonicalCard() {
@@ -65,5 +73,21 @@ TestCase {
         mouseMove(card, 130, 100, 100)
         mouseRelease(card, 130, 100, Qt.LeftButton)
         tryCompare(movedSpy, "count", 1)
+    }
+
+    function test_singleOutputGroupStartsCanonicalWireGesture() {
+        mousePress(card, 250, 110, Qt.LeftButton)
+        mouseMove(card, 220, 125, 30)
+        mouseRelease(card, 200, 130, Qt.LeftButton)
+        compare(routeStartedSpy.count, 1)
+        verify(routeMovedSpy.count >= 1)
+        compare(routeFinishedSpy.count, 1)
+        compare(routeStartedSpy.signalArguments[0][0], 12)
+    }
+
+    function test_multiPortGroupExpandsInsteadOfGuessing() {
+        mouseClick(card, 8, 110, Qt.LeftButton)
+        compare(expandRouteSpy.count, 1)
+        compare(routeStartedSpy.count, 0)
     }
 }
