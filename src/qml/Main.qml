@@ -96,7 +96,7 @@ ApplicationWindow {
                     }
                     Accessible.description: "Press Enter to select and reveal a matching graph object"
                 }
-                Button { text: "Fit"; onClicked: viewport.fitGraph() }
+                Button { text: "Fit"; onClicked: viewport.fitGraph(true) }
             }
         }
 
@@ -131,9 +131,10 @@ ApplicationWindow {
                         contentY = clamp((contentY + pointY) * next / old - pointY, 0, Math.max(0, graph.canvasHeight * next - height))
                         zoom = next
                     }
-                    function fitGraph() {
+                    function fitGraph(showEverything) {
                         if (graph.cardCount === 0) return
-                        zoom = clamp(Math.min(width / graph.canvasWidth, height / graph.canvasHeight) * 0.94, 0.45, 1.0)
+                        const fittedZoom = Math.min(width / graph.canvasWidth, height / graph.canvasHeight) * 0.94
+                        zoom = clamp(fittedZoom, showEverything ? 0.45 : 0.85, 1.0)
                         contentX = Math.max(0, (graph.canvasWidth * zoom - width) / 2)
                         contentY = Math.max(0, (graph.canvasHeight * zoom - height) / 2)
                         fittedOnce = true
@@ -290,7 +291,7 @@ ApplicationWindow {
     Connections {
         target: graph
         function onGraphChanged() {
-            if (!viewport.fittedOnce && graph.cardCount > 0) Qt.callLater(viewport.fitGraph)
+            if (!viewport.fittedOnce && graph.cardCount > 0) Qt.callLater(function() { viewport.fitGraph(false) })
         }
         function onFeedbackConfirmationChanged() {
             if (graph.feedbackConfirmation) feedbackDialog.open()

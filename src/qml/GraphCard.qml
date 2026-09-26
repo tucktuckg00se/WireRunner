@@ -76,7 +76,7 @@ Rectangle {
         Column {
             width: parent.width - expandButton.width - 8
             spacing: 5
-            Text {
+            GraphText {
                 width: parent.width
                 text: root.card.title
                 color: "#edf0f2"
@@ -84,18 +84,18 @@ Rectangle {
                 font.weight: Font.DemiBold
                 elide: Text.ElideRight
             }
-            Text {
+            GraphText {
                 width: parent.width
                 text: root.card.subtitle
                 color: "#9ba6af"
-                font.pixelSize: 10
+                font.pixelSize: 11
                 elide: Text.ElideRight
             }
             Row {
                 spacing: 7
                 Rectangle { width: 7; height: 7; radius: 4; color: root.card.state === "running" ? "#68d18b" : "#697680"; anchors.verticalCenter: parent.verticalCenter }
-                Text { text: root.card.state; color: "#b8c1c8"; font.pixelSize: 10 }
-                Text { visible: root.card.nodeCount > 1; text: root.card.nodeCount + " nodes"; color: "#77838d"; font.pixelSize: 10 }
+                GraphText { text: root.card.state; color: "#b8c1c8"; font.pixelSize: 11 }
+                GraphText { visible: root.card.nodeCount > 1; text: root.card.nodeCount + " nodes"; color: "#77838d"; font.pixelSize: 11 }
             }
         }
         ToolButton {
@@ -105,7 +105,15 @@ Rectangle {
             width: 72; height: 28
             visible: root.card.inputCount + root.card.outputCount > 0
             text: root.card.expanded ? "Collapse" : (root.card.inputCount + root.card.outputCount) + " ports"
-            font.pixelSize: 9
+            font.pixelSize: 10
+            contentItem: GraphText {
+                text: expandButton.text
+                color: expandButton.enabled ? "#d6dce0" : "#77838d"
+                font: expandButton.font
+                horizontalAlignment: Text.AlignHCenter
+                verticalAlignment: Text.AlignVCenter
+                elide: Text.ElideRight
+            }
             onClicked: root.toggleRequested()
             Accessible.name: (root.card.expanded ? "Collapse ports for " : "Expand ports for ") + root.card.title
         }
@@ -133,13 +141,14 @@ Rectangle {
             ToolTip.visible: routeHover.hovered && routeReason.length > 0
             ToolTip.text: routeReason
             Rectangle {
-                x: -5; y: 4; width: 11; height: 11; radius: 6; color: routeTarget ? root.mediaColor(modelData.media) : "#12161a"
+                x: -6; y: 3; width: 13; height: 13; radius: 7; color: routeTarget ? root.mediaColor(modelData.media) : "#12161a"
                 border.width: routeTarget ? 3 : 2
                 border.color: root.routing.active && routeCompatible ? "#edf0f2" : root.mediaColor(modelData.media)
             }
-            Text { x: 13; width: parent.width - 16; anchors.verticalCenter: parent.verticalCenter; text: root.portLabel(modelData); color: "#c3cbd1"; font.pixelSize: 9; elide: Text.ElideRight }
+            GraphText { x: 15; width: parent.width - 18; anchors.verticalCenter: parent.verticalCenter; text: root.portLabel(modelData); color: "#d1d7dc"; font.pixelSize: 11; elide: Text.ElideRight }
             MouseArea {
-                anchors.fill: parent
+                x: -10; y: -4; width: 32; height: 28
+                preventStealing: true
                 cursorShape: root.routing.active && parent.routeCompatible ? Qt.PointingHandCursor : Qt.ArrowCursor
                 onClicked: {
                     if (root.routing.active && modelData.id !== undefined) root.routeTargetRequested(modelData.id)
@@ -162,15 +171,16 @@ Rectangle {
             activeFocusOnTab: true
             Accessible.role: Accessible.Button
             Accessible.name: exactPort ? "Route from output " + root.portLabel(modelData) : "Expand " + root.portLabel(modelData)
-            Text { width: parent.width - 13; anchors.verticalCenter: parent.verticalCenter; horizontalAlignment: Text.AlignRight; text: root.portLabel(modelData); color: "#c3cbd1"; font.pixelSize: 9; elide: Text.ElideLeft }
+            GraphText { width: parent.width - 15; anchors.verticalCenter: parent.verticalCenter; horizontalAlignment: Text.AlignRight; text: root.portLabel(modelData); color: "#d1d7dc"; font.pixelSize: 11; elide: Text.ElideLeft }
             Rectangle {
-                x: parent.width - 6; y: 4; width: 11; height: 11; radius: 6
+                x: parent.width - 7; y: 3; width: 13; height: 13; radius: 7
                 color: root.routing.active && Number(root.routing.outputPortId) === Number(modelData.id) ? root.mediaColor(modelData.media) : "#12161a"
                 border.width: 2; border.color: root.mediaColor(modelData.media)
             }
             MouseArea {
                 id: routeMouse
-                anchors.fill: parent
+                x: parent.width - 20; y: -4; width: 32; height: 28
+                preventStealing: true
                 cursorShape: Qt.CrossCursor
                 property bool routeInProgress: false
                 onPressed: function(mouse) {
@@ -211,7 +221,7 @@ Rectangle {
         id: moveHandler
         target: root
         acceptedButtons: Qt.LeftButton
-        grabPermissions: PointerHandler.CanTakeOverFromItems | PointerHandler.CanTakeOverFromHandlersOfDifferentType
+        grabPermissions: PointerHandler.CanTakeOverFromHandlersOfDifferentType | PointerHandler.ApprovesTakeOverByAnything
         onActiveChanged: if (!active) root.moved(root.x, root.y)
     }
     Keys.onReturnPressed: root.selectedRequested()

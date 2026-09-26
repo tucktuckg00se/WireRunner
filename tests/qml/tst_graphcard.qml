@@ -76,13 +76,22 @@ TestCase {
     }
 
     function test_singleOutputGroupStartsCanonicalWireGesture() {
-        mousePress(card, 250, 110, Qt.LeftButton)
+        mousePress(card, 264, 110, Qt.LeftButton)
         mouseMove(card, 220, 125, 30)
         mouseRelease(card, 200, 130, Qt.LeftButton)
         compare(routeStartedSpy.count, 1)
         verify(routeMovedSpy.count >= 1)
         compare(routeFinishedSpy.count, 1)
         compare(routeStartedSpy.signalArguments[0][0], 12)
+        compare(movedSpy.count, 0)
+    }
+
+    function test_draggingPortLabelMovesCardWithoutRouting() {
+        mousePress(card, 190, 110, Qt.LeftButton)
+        mouseMove(card, 225, 140, 50)
+        mouseRelease(card, 225, 140, Qt.LeftButton)
+        tryCompare(movedSpy, "count", 1)
+        compare(routeStartedSpy.count, 0)
     }
 
     function test_multiPortGroupExpandsInsteadOfGuessing() {

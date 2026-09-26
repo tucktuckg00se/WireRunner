@@ -19,7 +19,7 @@ int main(int argc, char **argv) {
   QGuiApplication app(argc, argv);
   QGuiApplication::setOrganizationDomain(QStringLiteral("io.github.tucktuckg00se"));
   QGuiApplication::setApplicationName(QStringLiteral("WireRunner"));
-  QGuiApplication::setApplicationVersion(QStringLiteral("0.3.0"));
+  QGuiApplication::setApplicationVersion(QStringLiteral("0.3.1"));
   QGuiApplication::setDesktopFileName(QStringLiteral("io.github.tucktuckg00se.WireRunner"));
 
   QCommandLineParser parser;
