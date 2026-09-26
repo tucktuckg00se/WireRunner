@@ -14,6 +14,10 @@ Rectangle {
     signal volumeRequested(var control, real percent)
     signal channelVolumeRequested(var control, int channel, real percent)
     signal muteRequested(var control, bool muted)
+    signal defaultRequested(string kind, int nodeId)
+    signal profileRequested(int deviceId, int profileIndex)
+    signal routeChoiceRequested(int deviceId, int routeIndex, int routeDeviceId)
+    property var pendingProfile: ({})
 
     color: "#1d2328"
     border.color: "#3c4650"
@@ -77,6 +81,104 @@ Rectangle {
                     Text { text: root.selection.connectionCount || 0; color: "#d6dce0"; Layout.alignment: Qt.AlignRight }
                 }
                 ColumnLayout {
+                    visible: (root.selection.defaultActions || []).length > 0
+                    Layout.fillWidth: true
+                    spacing: 6
+                    Text { text: "Defaults"; color: "#83909a"; font.pixelSize: 10; font.weight: Font.DemiBold }
+                    Repeater {
+                        model: root.selection.defaultActions || []
+                        delegate: Button {
+                            required property var modelData
+                            Layout.fillWidth: true
+                            enabled: !modelData.effective
+                            text: modelData.effective ? modelData.label : "Use as " + modelData.label.toLowerCase()
+                            onClicked: root.defaultRequested(modelData.kind, modelData.nodeId)
+                        }
+                    }
+                    Text {
+                        Layout.fillWidth: true
+                        text: "Defaults guide future automatic connections; visible links are not replaced."
+                        color: "#7f8b95"; font.pixelSize: 9; wrapMode: Text.Wrap
+                    }
+                }
+                ColumnLayout {
+                    visible: (root.selection.profiles || []).length > 0 || (root.selection.routeOptions || []).length > 0
+                    Layout.fillWidth: true
+                    spacing: 7
+                    ToolButton { id: modeDisclosure; text: checked ? "Hide device modes" : "Device modes"; checkable: true }
+                    ColumnLayout {
+                        visible: modeDisclosure.checked
+                        Layout.fillWidth: true
+                        spacing: 6
+                        Text { visible: (root.selection.profiles || []).length > 0; text: "Profile"; color: "#83909a"; font.pixelSize: 9 }
+                        Repeater {
+                            model: root.selection.profiles || []
+                            delegate: Button {
+                                required property var modelData
+                                Layout.fillWidth: true
+                                enabled: modelData.enabled && !modelData.active
+                                text: (modelData.active ? "✓ " : "") + modelData.name + (modelData.availability === "unavailable" ? " — unavailable" : "")
+                                onClicked: {
+                                    if ((root.selection.connectionCount || 0) > 0)
+                                        root.pendingProfile = ({deviceId: root.selection.deviceId, index: modelData.index,
+                                            name: modelData.name, links: root.selection.connectionCount})
+                                    else root.profileRequested(root.selection.deviceId, modelData.index)
+                                }
+                            }
+                        }
+                        Rectangle {
+                            visible: root.pendingProfile.index !== undefined && root.pendingProfile.deviceId === root.selection.deviceId
+                            Layout.fillWidth: true; Layout.preferredHeight: 92; radius: 3
+                            color: "#302b22"; border.color: "#8a7041"
+                            ColumnLayout {
+                                anchors.fill: parent; anchors.margins: 8; spacing: 5
+                                Text {
+                                    Layout.fillWidth: true; wrapMode: Text.Wrap; color: "#e6d4ad"; font.pixelSize: 9
+                                    text: "Changing to " + root.pendingProfile.name + " may temporarily remove " + root.pendingProfile.links + " active connection" + (root.pendingProfile.links === 1 ? "." : "s.")
+                                }
+                                RowLayout {
+                                    Button { text: "Cancel"; onClicked: root.pendingProfile = ({}) }
+                                    Button {
+                                        text: "Change mode"
+                                        onClicked: {
+                                            root.profileRequested(root.pendingProfile.deviceId, root.pendingProfile.index)
+                                            root.pendingProfile = ({})
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        Text { visible: (root.selection.routeOptions || []).length > 0; text: "Ports"; color: "#83909a"; font.pixelSize: 9 }
+                        Repeater {
+                            model: root.selection.routeOptions || []
+                            delegate: Button {
+                                required property var modelData
+                                Layout.fillWidth: true
+                                enabled: modelData.enabled && !modelData.active
+                                text: (modelData.active ? "✓ " : "") + (modelData.direction === "capture" ? "Input · " : "Output · ") + modelData.name
+                                    + (modelData.availability === "unavailable" ? " — unavailable" : "")
+                                onClicked: root.routeChoiceRequested(root.selection.deviceId, modelData.index, modelData.deviceIndex)
+                            }
+                        }
+                        ToolButton {
+                            id: technicalModeDisclosure
+                            text: checked ? "Hide technical names" : "Show technical names"
+                            checkable: true
+                        }
+                        ColumnLayout {
+                            visible: technicalModeDisclosure.checked
+                            Layout.fillWidth: true
+                            Repeater {
+                                model: (root.selection.profiles || []).concat(root.selection.routeOptions || [])
+                                delegate: Text {
+                                    required property var modelData
+                                    Layout.fillWidth: true; text: modelData.technicalName || ""; color: "#77838d"; font.pixelSize: 8; elide: Text.ElideMiddle
+                                }
+                            }
+                        }
+                    }
+                }
+                ColumnLayout {
                     visible: (root.selection.audioControls || []).length > 0
                     Layout.fillWidth: true
                     spacing: 10
@@ -129,29 +231,19 @@ Rectangle {
                                 }
                                 RowLayout {
                                     Layout.fillWidth: true
-                                    Slider {
+                                    LevelControl {
                                         id: volumeSlider
                                         objectName: "volumeSlider-" + audioControl.modelData.nodeId
                                         Layout.fillWidth: true
+                                        Layout.preferredHeight: 30
                                         from: audioControl.modelData.minimum
                                         to: audioControl.modelData.maximum
                                         value: audioControl.modelData.volume
-                                        enabled: audioControl.modelData.writable && audioControl.modelData.hasVolume
-                                        stepSize: 1
-                                        onMoved: volumeCommit.restart()
-                                        onPressedChanged: if (!pressed && volumeCommit.running) {
-                                            volumeCommit.stop()
-                                            audioControl.commitVolume()
-                                        }
-                                        Accessible.name: audioControl.modelData.name + " volume"
-                                        Accessible.description: Math.round(value) + " percent, " + audioControl.decibelLabel(value)
-                                    }
-                                    Text {
-                                        Layout.preferredWidth: 76
-                                        horizontalAlignment: Text.AlignRight
-                                        text: Math.round(volumeSlider.value) + "%  " + audioControl.decibelLabel(volumeSlider.value)
-                                        color: volumeSlider.value > 100.05 ? "#e6b765" : "#cbd2d7"
-                                        font.pixelSize: 10
+                                        controlEnabled: audioControl.modelData.writable && audioControl.modelData.hasVolume
+                                        accessibleName: audioControl.modelData.name + " volume"
+                                        onCommitted: percent => root.volumeRequested(
+                                            audioControl.modelData.targetKind === "route" ? audioControl.modelData : audioControl.modelData.nodeId,
+                                            percent)
                                     }
                                 }
                                 Repeater {
@@ -163,18 +255,15 @@ Rectangle {
                                             Layout.preferredWidth: 72
                                             text: modelData.name; color: "#9ba6af"; font.pixelSize: 9; elide: Text.ElideRight
                                         }
-                                        Slider {
+                                        LevelControl {
                                             id: channelSlider
                                             Layout.fillWidth: true
+                                            Layout.preferredHeight: 28
                                             from: modelData.minimum; to: modelData.maximum; value: modelData.volume
-                                            enabled: audioControl.modelData.writable
-                                            stepSize: 1
-                                            onMoved: channelCommit.restart()
-                                            onPressedChanged: if (!pressed && channelCommit.running) {
-                                                channelCommit.stop()
-                                                root.channelVolumeRequested(audioControl.modelData, modelData.index, value)
-                                            }
-                                            Accessible.name: audioControl.modelData.name + " " + modelData.name + " volume"
+                                            controlEnabled: audioControl.modelData.writable
+                                            compact: true
+                                            accessibleName: audioControl.modelData.name + " " + modelData.name + " volume"
+                                            onCommitted: percent => root.channelVolumeRequested(audioControl.modelData, modelData.index, percent)
                                         }
                                         Text {
                                             Layout.preferredWidth: 26
@@ -185,8 +274,6 @@ Rectangle {
                                             ToolTip.text: modelData.soft ? "Software volume reported by PipeWire" : "Device route volume"
                                             HoverHandler { id: provenanceHover }
                                         }
-                                        Text { Layout.preferredWidth: 34; text: Math.round(channelSlider.value) + "%"; color: "#cbd2d7"; font.pixelSize: 9; horizontalAlignment: Text.AlignRight }
-                                        Timer { id: channelCommit; interval: 100; onTriggered: root.channelVolumeRequested(audioControl.modelData, modelData.index, channelSlider.value) }
                                     }
                                 }
                                 Text {
@@ -196,7 +283,6 @@ Rectangle {
                                     color: "#e6b765"; font.pixelSize: 9; wrapMode: Text.Wrap
                                 }
                             }
-                            Timer { id: volumeCommit; interval: 120; onTriggered: audioControl.commitVolume() }
                         }
                     }
                 }

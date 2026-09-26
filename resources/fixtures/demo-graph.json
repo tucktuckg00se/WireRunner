@@ -9,10 +9,15 @@
     {"id": 5, "name": "Bitwig Studio", "stableId": "com.bitwig.BitwigStudio"}
   ],
   "devices": [
-    {"id": 1000, "name": "Built-in headphones", "stableId": "pci-0000_00_1f.3", "mediaClass": "Audio device", "routes": [
+    {"id": 1000, "name": "Built-in headphones", "stableId": "pci-0000_00_1f.3", "mediaClass": "Audio device", "profiles": [
+      {"index": 1, "name": "output:analog-stereo", "description": "Stereo output", "priority": 100, "active": true},
+      {"index": 2, "name": "pro-audio", "description": "Pro Audio", "priority": 50, "active": false}
+    ], "routes": [
       {"index": 1, "deviceIndex": 0, "direction": "output", "name": "analog-output-headphones", "description": "Headphones", "audio": {"volume": 0.512, "channelVolumes": [0.512, 0.512], "channelMap": [3, 4], "softVolumes": [0.512, 0.512], "maximumVolume": 1.0, "muted": false}}
     ]},
-    {"id": 1001, "name": "Scarlett 18i20", "stableId": "usb-Focusrite_Scarlett_18i20", "mediaClass": "Pro audio interface", "routes": [
+    {"id": 1001, "name": "Scarlett 18i20", "stableId": "usb-Focusrite_Scarlett_18i20", "mediaClass": "Pro audio interface", "profiles": [
+      {"index": 1, "name": "pro-audio", "description": "Pro Audio", "priority": 200, "active": true}
+    ], "routes": [
       {"index": 2, "deviceIndex": 0, "direction": "output", "name": "pro-output", "description": "Playback outputs", "audio": {"volume": 1.0, "channelVolumes": [0.82, 0.82, 0.7, 0.7, 0.64, 0.64, 0.58, 0.58], "channelMap": [4096, 4097, 4098, 4099, 4100, 4101, 4102, 4103], "softVolumes": [0.82, 0.82, 0.7, 0.7, 0.64, 0.64, 0.58, 0.58], "maximumVolume": 1.0, "muted": false}}
     ]},
     {"id": 1002, "name": "USB camera", "stableId": "usb-camera-01", "mediaClass": "Video device"},
@@ -51,5 +56,9 @@
     {"id": 204, "outputNodeId": 20, "outputPortId": 103, "inputNodeId": 42, "inputPortId": 112, "state": "active", "media": "audio"},
     {"id": 210, "outputNodeId": 40, "outputPortId": 110, "inputNodeId": 41, "inputPortId": 111, "state": "active", "media": "video"},
     {"id": 220, "outputNodeId": 50, "outputPortId": 120, "inputNodeId": 51, "inputPortId": 121, "state": "paused", "media": "midi"}
+  ],
+  "defaults": [
+    {"kind": "audioSink", "configuredName": "alsa_output.pci", "effectiveName": "alsa_output.pci"},
+    {"kind": "videoSource", "configuredName": "v4l2_input.usb-camera", "effectiveName": "v4l2_input.usb-camera"}
   ]
 }

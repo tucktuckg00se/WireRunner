@@ -54,6 +54,28 @@ struct SetDeviceRouteAudioRequest {
   std::optional<bool> muted;
 };
 
+struct SetDefaultRequest {
+  CommandId commandId{};
+  std::uint64_t snapshotRevision{};
+  DefaultKind kind{DefaultKind::AudioSink};
+  std::string nodeName;
+};
+
+struct SetDeviceProfileRequest {
+  CommandId commandId{};
+  std::uint64_t snapshotRevision{};
+  GlobalId deviceId{};
+  int profileIndex{-1};
+};
+
+struct SetDeviceRouteRequest {
+  CommandId commandId{};
+  std::uint64_t snapshotRevision{};
+  GlobalId deviceId{};
+  int routeIndex{-1};
+  int routeDeviceId{-1};
+};
+
 struct CommandResult {
   CommandId commandId{};
   bool accepted{};
@@ -72,6 +94,9 @@ public:
   virtual void destroyLink(DestroyLinkRequest request, CommandCallback callback) = 0;
   virtual void setNodeAudio(SetNodeAudioRequest request, CommandCallback callback) = 0;
   virtual void setDeviceRouteAudio(SetDeviceRouteAudioRequest request, CommandCallback callback) = 0;
+  virtual void setDefault(SetDefaultRequest request, CommandCallback callback) = 0;
+  virtual void setDeviceProfile(SetDeviceProfileRequest request, CommandCallback callback) = 0;
+  virtual void setDeviceRoute(SetDeviceRouteRequest request, CommandCallback callback) = 0;
 };
 
 } // namespace wirerunner

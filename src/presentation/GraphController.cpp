@@ -63,6 +63,17 @@ QString primaryMedia(const GraphCard &card) {
   return QStringLiteral("unknown");
 }
 
+QString availabilityText(Availability value) {
+  return value == Availability::Unavailable ? QStringLiteral("unavailable")
+    : value == Availability::Available ? QStringLiteral("available") : QStringLiteral("unknown");
+}
+
+QString defaultKindText(DefaultKind kind) {
+  if (kind == DefaultKind::AudioSink) return QStringLiteral("audioSink");
+  if (kind == DefaultKind::AudioSource) return QStringLiteral("audioSource");
+  return QStringLiteral("videoSource");
+}
+
 QString channelPositionName(std::uint32_t position) {
   switch (position) {
   case 2: return QStringLiteral("Mono");
@@ -131,6 +142,17 @@ GraphController::GraphController(std::unique_ptr<GraphSource> source, QString la
   commandTimer_.setInterval(4000);
   connect(&commandTimer_, &QTimer::timeout, this, [this] {
     if (pending_) failPending(QStringLiteral("PipeWire did not confirm the graph change"));
+    else if (pendingSetting_) {
+      const auto message = pendingSetting_->kind == SettingKind::Default
+        ? QStringLiteral("WirePlumber kept a different default. Session policy may have higher priority.")
+        : pendingSetting_->kind == SettingKind::Profile
+          ? QStringLiteral("WirePlumber did not activate that device mode.")
+          : QStringLiteral("WirePlumber did not activate that device port.");
+      pendingSetting_.reset();
+      setNotice(message);
+      emit commandPendingChanged();
+      rebuildPresentation();
+    }
   });
   audioTimer_.setInterval(200);
   connect(&audioTimer_, &QTimer::timeout, this, [this] {
@@ -205,6 +227,7 @@ void GraphController::applySnapshot(std::shared_ptr<const GraphSnapshot> snapsho
   remoteSummary_ = qtext(snapshot_->remoteName + "  /  " + snapshot_->remoteVersion);
   resolvePending();
   resolveAudioPending();
+  resolveSettingPending();
 
   if (!previousRemote.isEmpty() && previousRemote == nextRemote && !history_.isEmpty() &&
       historyCursor_ == history_.size()) {
@@ -230,6 +253,12 @@ void GraphController::applyStatus(SourceStatus status) {
   if (!connected_) {
     cancelRoute();
     if (pending_) failPending(QStringLiteral("The PipeWire connection changed before the edit completed"));
+    if (pendingSetting_) {
+      pendingSetting_.reset();
+      commandTimer_.stop();
+      setNotice(QStringLiteral("The PipeWire connection changed before the setting was confirmed."));
+      emit commandPendingChanged();
+    }
     if (!pendingAudio_.isEmpty() || !pendingRouteAudio_.isEmpty()) {
       pendingAudio_.clear();
       pendingRouteAudio_.clear();
@@ -267,7 +296,12 @@ void GraphController::rebuildPresentation() {
     QVariantList audioControls;
     QVariantMap inlineAudio;
     const GraphDevice *cardDevice = nullptr;
+    if (card.deviceId) {
+      const auto device = std::ranges::find(snapshot_->devices, *card.deviceId, &GraphDevice::id);
+      if (device != snapshot_->devices.end()) cardDevice = &*device;
+    }
     for (const auto nodeId : card.nodeIds) {
+      if (cardDevice) break;
       const auto node = std::ranges::find(snapshot_->nodes, nodeId, &GraphNode::id);
       if (node == snapshot_->nodes.end() || !node->deviceId) continue;
       const auto device = std::ranges::find(snapshot_->devices, *node->deviceId, &GraphDevice::id);
@@ -280,6 +314,7 @@ void GraphController::rebuildPresentation() {
         if (node != snapshot_->nodes.end() && node->profileDeviceId) preferredDevices.insert(*node->profileDeviceId);
       }
       for (const auto &route : cardDevice->routes) {
+        if (!route.active || (!route.audio.hasVolume && !route.audio.hasMute)) continue;
         if (!preferredDevices.isEmpty() && route.deviceIndex >= 0 && !preferredDevices.contains(route.deviceIndex)) continue;
         const auto routeKey = QStringLiteral("%1:%2").arg(cardDevice->id).arg(route.index);
         const auto pending = pendingRouteAudio_.constFind(routeKey);
@@ -343,6 +378,52 @@ void GraphController::rebuildPresentation() {
       if (std::ranges::find(card.nodeIds, link.outputNodeId) != card.nodeIds.end() ||
           std::ranges::find(card.nodeIds, link.inputNodeId) != card.nodeIds.end()) ++connectionCount;
     }
+    QVariantList profiles;
+    QVariantList routeOptions;
+    if (cardDevice) {
+      if (mediaTypes.isEmpty()) {
+        const auto media = classifyMedia(cardDevice->mediaClass);
+        if (media != MediaType::Unknown) mediaTypes.push_back(text(mediaTypeName(media)));
+      }
+      for (const auto &profile : cardDevice->profiles) {
+        profiles.push_back(QVariantMap{{QStringLiteral("index"), profile.index},
+          {QStringLiteral("name"), qtext(profile.description.empty() ? profile.name : profile.description)},
+          {QStringLiteral("technicalName"), qtext(profile.name)}, {QStringLiteral("active"), profile.active},
+          {QStringLiteral("availability"), availabilityText(profile.availability)},
+          {QStringLiteral("enabled"), cardDevice->writable && profile.availability != Availability::Unavailable}});
+      }
+      for (const auto &route : cardDevice->routes) {
+        routeOptions.push_back(QVariantMap{{QStringLiteral("index"), route.index},
+          {QStringLiteral("deviceIndex"), route.deviceIndex},
+          {QStringLiteral("name"), qtext(route.description.empty() ? route.name : route.description)},
+          {QStringLiteral("technicalName"), qtext(route.name)}, {QStringLiteral("active"), route.active},
+          {QStringLiteral("direction"), route.direction == PortDirection::Output ? QStringLiteral("playback") : QStringLiteral("capture")},
+          {QStringLiteral("availability"), availabilityText(route.availability)},
+          {QStringLiteral("enabled"), cardDevice->writable && route.availability != Availability::Unavailable}});
+      }
+    }
+    QVariantList defaultActions;
+    QStringList defaultBadges;
+    const auto appendDefault = [&](const GraphNode &node, DefaultKind kind, const QString &label) {
+      const auto target = std::ranges::find(snapshot_->defaults, kind, &DefaultTarget::kind);
+      const auto effective = target != snapshot_->defaults.end() && target->effectiveName == node.technicalName;
+      const auto configured = target != snapshot_->defaults.end() && target->configuredName == node.technicalName;
+      defaultActions.push_back(QVariantMap{{QStringLiteral("kind"), defaultKindText(kind)},
+        {QStringLiteral("label"), label}, {QStringLiteral("nodeId"), node.id},
+        {QStringLiteral("nodeName"), qtext(node.technicalName)}, {QStringLiteral("effective"), effective},
+        {QStringLiteral("configured"), configured}});
+      if (effective && !defaultBadges.contains(label)) defaultBadges.push_back(label);
+    };
+    for (const auto nodeId : card.nodeIds) {
+      const auto node = std::ranges::find(snapshot_->nodes, nodeId, &GraphNode::id);
+      if (node == snapshot_->nodes.end() || node->mediaClass.starts_with("Stream/")) continue;
+      if (node->media == MediaType::Audio && node->mediaClass.find("Sink") != std::string::npos)
+        appendDefault(*node, DefaultKind::AudioSink, QStringLiteral("Default output"));
+      if (node->media == MediaType::Audio && node->mediaClass.find("Source") != std::string::npos)
+        appendDefault(*node, DefaultKind::AudioSource, QStringLiteral("Default input"));
+      if (node->media == MediaType::Video && node->mediaClass.find("Source") != std::string::npos)
+        appendDefault(*node, DefaultKind::VideoSource, QStringLiteral("Default camera"));
+    }
     const bool visible = mediaFilter_ == QStringLiteral("all") || mediaTypes.contains(mediaFilter_);
     QVariantMap item{{QStringLiteral("key"), key}, {QStringLiteral("title"), qtext(card.title)},
       {QStringLiteral("subtitle"), qtext(card.subtitle)}, {QStringLiteral("kind"), qtext(card.kind)},
@@ -352,6 +433,10 @@ void GraphController::rebuildPresentation() {
       {QStringLiteral("media"), primaryMedia(card)}, {QStringLiteral("mediaTypes"), mediaTypes},
       {QStringLiteral("state"), stateLabel}, {QStringLiteral("members"), members},
       {QStringLiteral("audioControls"), audioControls},
+      {QStringLiteral("deviceId"), cardDevice ? QVariant::fromValue(cardDevice->id) : QVariant{}},
+      {QStringLiteral("deviceWritable"), cardDevice && cardDevice->writable},
+      {QStringLiteral("profiles"), profiles}, {QStringLiteral("routeOptions"), routeOptions},
+      {QStringLiteral("defaultActions"), defaultActions}, {QStringLiteral("defaultBadges"), defaultBadges},
       {QStringLiteral("inlineAudio"), inlineAudio}, {QStringLiteral("portTop"), portTop},
       {QStringLiteral("technicalNames"), technicalNames}, {QStringLiteral("inputs"), inputs},
       {QStringLiteral("outputs"), outputs}, {QStringLiteral("inputGroups"), inputGroups},
@@ -573,8 +658,8 @@ QVariantMap GraphController::findCard(const QString &query) {
   statusText_ = QStringLiteral("No object matches “%1”").arg(term); emit statusChanged(); return {};
 }
 
-bool GraphController::canUndo() const { return !pending_ && historyCursor_ > 0; }
-bool GraphController::canRedo() const { return !pending_ && historyCursor_ < history_.size(); }
+bool GraphController::canUndo() const { return !pending_ && !pendingSetting_ && historyCursor_ > 0; }
+bool GraphController::canRedo() const { return !pending_ && !pendingSetting_ && historyCursor_ < history_.size(); }
 
 void GraphController::setNotice(QString message) {
   if (noticeText_ == message) return;
@@ -790,6 +875,16 @@ void GraphController::applyRouteAudioResult(const QString &key, CommandResult re
   rebuildPresentation();
 }
 
+void GraphController::applySettingResult(CommandResult result) {
+  if (!pendingSetting_ || pendingSetting_->commandId != result.commandId) return;
+  if (result.accepted) { setNotice(qtext(result.message)); return; }
+  commandTimer_.stop();
+  pendingSetting_.reset();
+  setNotice(qtext(result.message));
+  emit commandPendingChanged();
+  rebuildPresentation();
+}
+
 void GraphController::resolvePending() {
   if (!snapshot_ || !pending_) return;
   if (pending_->creating) {
@@ -843,14 +938,66 @@ void GraphController::resolveAudioPending() {
   if (pendingAudio_.isEmpty() && pendingRouteAudio_.isEmpty()) audioTimer_.stop();
 }
 
+void GraphController::resolveSettingPending() {
+  if (!snapshot_ || !pendingSetting_) return;
+  bool confirmed = false;
+  if (pendingSetting_->kind == SettingKind::Default) {
+    const auto target = std::ranges::find(snapshot_->defaults, pendingSetting_->defaultKind, &DefaultTarget::kind);
+    confirmed = target != snapshot_->defaults.end() && (pendingSetting_->targetName.empty()
+      ? target->configuredName.empty() : target->effectiveName == pendingSetting_->targetName);
+  } else {
+    const auto device = std::ranges::find(snapshot_->devices, pendingSetting_->deviceId, &GraphDevice::id);
+    if (device != snapshot_->devices.end() && pendingSetting_->kind == SettingKind::Profile)
+      confirmed = std::ranges::any_of(device->profiles, [&](const DeviceProfile &profile) {
+        return profile.index == pendingSetting_->targetIndex && profile.active;
+      });
+    if (device != snapshot_->devices.end() && pendingSetting_->kind == SettingKind::Route)
+      confirmed = std::ranges::any_of(device->routes, [&](const DeviceRoute &route) {
+        return route.index == pendingSetting_->targetIndex && route.deviceIndex == pendingSetting_->routeDeviceId && route.active;
+      });
+  }
+  if (!confirmed) return;
+  const auto setting = *pendingSetting_;
+  commandTimer_.stop();
+  pendingSetting_.reset();
+  if (setting.intent == OperationIntent::Normal &&
+      (setting.kind == SettingKind::Default || setting.previousIndex >= 0)) {
+    while (history_.size() > historyCursor_) history_.removeLast();
+    HistoryAction action;
+    action.kind = setting.kind == SettingKind::Default ? HistoryKind::DefaultChanged
+      : setting.kind == SettingKind::Profile ? HistoryKind::ProfileChanged : HistoryKind::RouteChanged;
+    action.defaultKind = setting.defaultKind;
+    action.previousName = setting.previousName;
+    action.targetName = setting.targetName;
+    action.deviceId = setting.deviceId;
+    action.previousIndex = setting.previousIndex;
+    action.targetIndex = setting.targetIndex;
+    action.previousRouteDeviceId = setting.previousRouteDeviceId;
+    action.targetRouteDeviceId = setting.routeDeviceId;
+    action.recordedAt = QDateTime::currentMSecsSinceEpoch();
+    history_.push_back(std::move(action));
+    if (history_.size() > 50) history_.removeFirst();
+    historyCursor_ = history_.size();
+  } else if (setting.intent == OperationIntent::Undo) {
+    historyCursor_ = std::max<qsizetype>(0, historyCursor_ - 1);
+  } else if (setting.intent == OperationIntent::Redo) {
+    historyCursor_ = std::min(history_.size(), historyCursor_ + 1);
+  }
+  setNotice(QStringLiteral("WirePlumber confirmed the setting change."));
+  emit commandPendingChanged(); emit historyChanged();
+}
+
 void GraphController::completePending(const GraphLink &observed) {
   if (!pending_) return;
   const auto operation = *pending_;
   commandTimer_.stop(); pending_.reset();
   if (operation.intent == OperationIntent::Normal) {
     while (history_.size() > historyCursor_) history_.removeLast();
-    history_.push_back({operation.creating ? HistoryKind::Created : HistoryKind::Destroyed,
-      observed, QDateTime::currentMSecsSinceEpoch()});
+    HistoryAction action;
+    action.kind = operation.creating ? HistoryKind::Created : HistoryKind::Destroyed;
+    action.link = observed;
+    action.recordedAt = QDateTime::currentMSecsSinceEpoch();
+    history_.push_back(std::move(action));
     if (history_.size() > 50) history_.removeFirst();
     historyCursor_ = history_.size();
   } else if (operation.intent == OperationIntent::Undo) {
@@ -1037,6 +1184,132 @@ void GraphController::setAudioMuted(const QVariantMap &control, bool muted) {
   rebuildPresentation();
 }
 
+void GraphController::setDefaultTarget(const QString &kind, quint32 nodeId) {
+  if (!snapshot_ || pending_ || pendingSetting_) return;
+  const auto node = std::ranges::find(snapshot_->nodes, static_cast<GlobalId>(nodeId), &GraphNode::id);
+  if (node == snapshot_->nodes.end() || node->technicalName.empty()) {
+    setNotice(QStringLiteral("The selected default target is no longer available."));
+    return;
+  }
+  const auto targetKind = kind == QStringLiteral("audioSink") ? DefaultKind::AudioSink
+    : kind == QStringLiteral("audioSource") ? DefaultKind::AudioSource : DefaultKind::VideoSource;
+  SetDefaultRequest request{.commandId = nextCommandId_++, .snapshotRevision = snapshot_->revision,
+    .kind = targetKind, .nodeName = node->technicalName};
+  const auto previous = std::ranges::find(snapshot_->defaults, targetKind, &DefaultTarget::kind);
+  pendingSetting_ = PendingSetting{.commandId = request.commandId, .kind = SettingKind::Default,
+    .defaultKind = targetKind, .targetName = node->technicalName,
+    .previousName = previous == snapshot_->defaults.end() ? std::string{} : previous->configuredName,
+    .deadline = QDateTime::currentMSecsSinceEpoch() + 4000};
+  commandTimer_.start();
+  emit commandPendingChanged();
+  setNotice(QStringLiteral("Asking WirePlumber to change the default…"));
+  source_->setDefault(std::move(request), [this](CommandResult result) {
+    QMetaObject::invokeMethod(this, [this, result = std::move(result)] { applySettingResult(result); }, Qt::QueuedConnection);
+  });
+  rebuildPresentation();
+}
+
+void GraphController::setDeviceProfile(quint32 deviceId, int profileIndex) {
+  if (!snapshot_ || pending_ || pendingSetting_) return;
+  const auto device = std::ranges::find(snapshot_->devices, static_cast<GlobalId>(deviceId), &GraphDevice::id);
+  if (device == snapshot_->devices.end() || !device->writable) {
+    setNotice(QStringLiteral("This device mode cannot be changed.")); return;
+  }
+  const auto profile = std::ranges::find(device->profiles, profileIndex, &DeviceProfile::index);
+  if (profile == device->profiles.end() || profile->availability == Availability::Unavailable) {
+    setNotice(QStringLiteral("That device mode is unavailable.")); return;
+  }
+  SetDeviceProfileRequest request{.commandId = nextCommandId_++, .snapshotRevision = snapshot_->revision,
+    .deviceId = static_cast<GlobalId>(deviceId), .profileIndex = profileIndex};
+  const auto active = std::ranges::find(device->profiles, true, &DeviceProfile::active);
+  pendingSetting_ = PendingSetting{.commandId = request.commandId, .kind = SettingKind::Profile,
+    .targetName = {}, .deviceId = static_cast<GlobalId>(deviceId), .targetIndex = profileIndex,
+    .previousName = {},
+    .previousIndex = active == device->profiles.end() ? -1 : active->index,
+    .deadline = QDateTime::currentMSecsSinceEpoch() + 4000};
+  commandTimer_.start(); emit commandPendingChanged();
+  setNotice(QStringLiteral("Changing device mode…"));
+  source_->setDeviceProfile(std::move(request), [this](CommandResult result) {
+    QMetaObject::invokeMethod(this, [this, result = std::move(result)] { applySettingResult(result); }, Qt::QueuedConnection);
+  });
+  rebuildPresentation();
+}
+
+void GraphController::setDeviceRoute(quint32 deviceId, int routeIndex, int routeDeviceId) {
+  if (!snapshot_ || pending_ || pendingSetting_) return;
+  const auto device = std::ranges::find(snapshot_->devices, static_cast<GlobalId>(deviceId), &GraphDevice::id);
+  if (device == snapshot_->devices.end() || !device->writable) {
+    setNotice(QStringLiteral("This device port cannot be changed.")); return;
+  }
+  const auto route = std::ranges::find_if(device->routes, [&](const DeviceRoute &candidate) {
+    return candidate.index == routeIndex && candidate.deviceIndex == routeDeviceId;
+  });
+  if (route == device->routes.end() || route->availability == Availability::Unavailable) {
+    setNotice(QStringLiteral("That device port is unavailable.")); return;
+  }
+  SetDeviceRouteRequest request{.commandId = nextCommandId_++, .snapshotRevision = snapshot_->revision,
+    .deviceId = static_cast<GlobalId>(deviceId), .routeIndex = routeIndex, .routeDeviceId = routeDeviceId};
+  const auto active = std::ranges::find_if(device->routes, [&](const DeviceRoute &candidate) {
+    return candidate.active && candidate.direction == route->direction;
+  });
+  pendingSetting_ = PendingSetting{.commandId = request.commandId, .kind = SettingKind::Route,
+    .targetName = {}, .deviceId = static_cast<GlobalId>(deviceId), .targetIndex = routeIndex, .routeDeviceId = routeDeviceId,
+    .previousName = {},
+    .previousIndex = active == device->routes.end() ? -1 : active->index,
+    .previousRouteDeviceId = active == device->routes.end() ? -1 : active->deviceIndex,
+    .deadline = QDateTime::currentMSecsSinceEpoch() + 4000};
+  commandTimer_.start(); emit commandPendingChanged();
+  setNotice(QStringLiteral("Changing device port…"));
+  source_->setDeviceRoute(std::move(request), [this](CommandResult result) {
+    QMetaObject::invokeMethod(this, [this, result = std::move(result)] { applySettingResult(result); }, Qt::QueuedConnection);
+  });
+  rebuildPresentation();
+}
+
+void GraphController::submitHistorySetting(const HistoryAction &action, OperationIntent intent) {
+  if (!snapshot_ || pending_ || pendingSetting_) return;
+  const bool undoing = intent == OperationIntent::Undo;
+  const auto commandId = nextCommandId_++;
+  PendingSetting pending;
+  pending.commandId = commandId;
+  pending.intent = intent;
+  pending.deadline = QDateTime::currentMSecsSinceEpoch() + 4000;
+  if (action.kind == HistoryKind::DefaultChanged) {
+    pending.kind = SettingKind::Default;
+    pending.defaultKind = action.defaultKind;
+    pending.targetName = undoing ? action.previousName : action.targetName;
+    pending.previousName = undoing ? action.targetName : action.previousName;
+    pendingSetting_ = pending;
+    source_->setDefault({commandId, snapshot_->revision, action.defaultKind, pending.targetName}, [this](CommandResult result) {
+      QMetaObject::invokeMethod(this, [this, result = std::move(result)] { applySettingResult(result); }, Qt::QueuedConnection);
+    });
+  } else if (action.kind == HistoryKind::ProfileChanged) {
+    pending.kind = SettingKind::Profile;
+    pending.deviceId = action.deviceId;
+    pending.targetIndex = undoing ? action.previousIndex : action.targetIndex;
+    pending.previousIndex = undoing ? action.targetIndex : action.previousIndex;
+    pendingSetting_ = pending;
+    source_->setDeviceProfile({commandId, snapshot_->revision, action.deviceId, pending.targetIndex}, [this](CommandResult result) {
+      QMetaObject::invokeMethod(this, [this, result = std::move(result)] { applySettingResult(result); }, Qt::QueuedConnection);
+    });
+  } else if (action.kind == HistoryKind::RouteChanged) {
+    pending.kind = SettingKind::Route;
+    pending.deviceId = action.deviceId;
+    pending.targetIndex = undoing ? action.previousIndex : action.targetIndex;
+    pending.routeDeviceId = undoing ? action.previousRouteDeviceId : action.targetRouteDeviceId;
+    pending.previousIndex = undoing ? action.targetIndex : action.previousIndex;
+    pending.previousRouteDeviceId = undoing ? action.targetRouteDeviceId : action.previousRouteDeviceId;
+    pendingSetting_ = pending;
+    source_->setDeviceRoute({commandId, snapshot_->revision, action.deviceId, pending.targetIndex, pending.routeDeviceId}, [this](CommandResult result) {
+      QMetaObject::invokeMethod(this, [this, result = std::move(result)] { applySettingResult(result); }, Qt::QueuedConnection);
+    });
+  } else return;
+  commandTimer_.start();
+  emit commandPendingChanged();
+  setNotice(undoing ? QStringLiteral("Restoring the previous setting…") : QStringLiteral("Reapplying the setting…"));
+  rebuildPresentation();
+}
+
 void GraphController::undo() {
   if (!canUndo() || !snapshot_) return;
   const auto &action = history_.at(historyCursor_ - 1);
@@ -1049,9 +1322,9 @@ void GraphController::undo() {
       --historyCursor_; setNotice(QStringLiteral("That link is already gone.")); emit historyChanged(); return;
     }
     submitDestroy(*found, OperationIntent::Undo);
-  } else {
+  } else if (action.kind == HistoryKind::Destroyed) {
     submitCreate(action.link.outputPortId, action.link.inputPortId, action.link.feedback, OperationIntent::Undo);
-  }
+  } else submitHistorySetting(action, OperationIntent::Undo);
 }
 
 void GraphController::redo() {
@@ -1059,7 +1332,7 @@ void GraphController::redo() {
   const auto &action = history_.at(historyCursor_);
   if (action.kind == HistoryKind::Created) {
     submitCreate(action.link.outputPortId, action.link.inputPortId, action.link.feedback, OperationIntent::Redo);
-  } else {
+  } else if (action.kind == HistoryKind::Destroyed) {
     const auto found = std::ranges::find_if(snapshot_->links, [&](const GraphLink &link) {
       return link.outputPortId == action.link.outputPortId && link.inputPortId == action.link.inputPortId;
     });
@@ -1067,7 +1340,7 @@ void GraphController::redo() {
       ++historyCursor_; setNotice(QStringLiteral("That link is already gone.")); emit historyChanged(); return;
     }
     submitDestroy(*found, OperationIntent::Redo);
-  }
+  } else submitHistorySetting(action, OperationIntent::Redo);
 }
 
 void GraphController::saveCard(const QString &key) {

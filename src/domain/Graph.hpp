@@ -15,6 +15,8 @@ using GlobalId = std::uint32_t;
 enum class MediaType { Audio, Video, Midi, Unknown };
 enum class PortDirection { Input, Output };
 enum class NodeRole { Source, Processor, Destination };
+enum class Availability { Unknown, Available, Unavailable };
+enum class DefaultKind { AudioSink, AudioSource, VideoSource };
 
 struct GraphClient { GlobalId id{}; std::string name; std::string stableId; };
 struct NodeAudioControl {
@@ -36,7 +38,19 @@ struct DeviceRoute {
   PortDirection direction{PortDirection::Output};
   std::string name;
   std::string description;
+  int priority{};
+  Availability availability{Availability::Unknown};
+  bool active{};
   NodeAudioControl audio;
+};
+
+struct DeviceProfile {
+  int index{-1};
+  std::string name;
+  std::string description;
+  int priority{};
+  Availability availability{Availability::Unknown};
+  bool active{};
 };
 
 struct GraphDevice {
@@ -45,6 +59,14 @@ struct GraphDevice {
   std::string stableId;
   std::string mediaClass;
   std::vector<DeviceRoute> routes;
+  std::vector<DeviceProfile> profiles;
+  bool writable{};
+};
+
+struct DefaultTarget {
+  DefaultKind kind{DefaultKind::AudioSink};
+  std::string configuredName;
+  std::string effectiveName;
 };
 
 struct GraphNode {
@@ -93,6 +115,7 @@ struct GraphSnapshot {
   std::vector<GraphNode> nodes;
   std::vector<GraphPort> ports;
   std::vector<GraphLink> links;
+  std::vector<DefaultTarget> defaults;
   std::string remoteName;
   std::string remoteVersion;
   std::uint64_t revision{};
@@ -111,6 +134,7 @@ struct GraphCard {
   std::string subtitle;
   std::string kind;
   bool persistent{};
+  std::optional<GlobalId> deviceId;
   std::vector<GlobalId> nodeIds;
   std::vector<GraphPort> inputs;
   std::vector<GraphPort> outputs;

@@ -218,8 +218,22 @@ ApplicationWindow {
 
                 WheelHandler {
                     target: null
+                    acceptedModifiers: Qt.ControlModifier
+                    blocking: true
                     onWheel: function(event) {
-                        viewport.setZoom(viewport.zoom * Math.pow(1.0015, event.angleDelta.y), event.x, event.y)
+                        const delta = event.pixelDelta.y !== 0 ? event.pixelDelta.y * 2 : event.angleDelta.y
+                        viewport.setZoom(viewport.zoom * Math.pow(1.0015, delta), event.x, event.y)
+                        event.accepted = true
+                    }
+                }
+                WheelHandler {
+                    target: null
+                    acceptedModifiers: Qt.ShiftModifier
+                    blocking: true
+                    onWheel: function(event) {
+                        const delta = event.pixelDelta.y !== 0 ? event.pixelDelta.y : event.angleDelta.y / 2
+                        viewport.contentX = viewport.clamp(viewport.contentX - delta, 0,
+                            Math.max(0, viewport.contentWidth - viewport.width))
                         event.accepted = true
                     }
                 }
@@ -274,6 +288,9 @@ ApplicationWindow {
                 onVolumeRequested: (control, percent) => typeof control === "number" ? graph.setNodeVolume(control, percent) : graph.setAudioVolume(control, percent)
                 onChannelVolumeRequested: (control, channel, percent) => graph.setAudioChannelVolume(control, channel, percent)
                 onMuteRequested: (control, muted) => typeof control === "number" ? graph.setNodeMuted(control, muted) : graph.setAudioMuted(control, muted)
+                onDefaultRequested: (kind, nodeId) => graph.setDefaultTarget(kind, nodeId)
+                onProfileRequested: (deviceId, profileIndex) => graph.setDeviceProfile(deviceId, profileIndex)
+                onRouteChoiceRequested: (deviceId, routeIndex, routeDeviceId) => graph.setDeviceRoute(deviceId, routeIndex, routeDeviceId)
             }
         }
     }

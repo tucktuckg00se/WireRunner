@@ -20,8 +20,14 @@ shows every channel exposed by the active WirePlumber device Route, including
 separate playback and capture routes, while application cards retain their
 per-node controls. Device changes are written back as remembered Route state;
 node changes are reconciled with the observed PipeWire state. The Fit action now
-lives with the zoom controls, the mouse wheel zooms around the pointer, and
+lives with the zoom controls, Ctrl+mouse wheel zooms around the pointer, and
 wires follow cards continuously while they move.
+
+Volume fields accept exact percentages or explicit dB values, and a double
+click on a slider handle returns it to 0 dB. The wheel pans the graph, while
+Ctrl+wheel and trackpad pinch zoom around the pointer. Device inspectors expose
+remembered WirePlumber profiles and ports, and eligible audio and video nodes
+can be selected as defaults without rewriting their visible links.
 
 The demonstration graph remains read-only. Live mutations use libwireplumber's
 link factory on the dedicated GLib backend thread and are considered complete

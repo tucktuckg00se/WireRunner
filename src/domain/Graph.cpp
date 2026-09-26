@@ -109,6 +109,7 @@ ComposedGraph composeGraph(const GraphSnapshot &snapshot) {
           card.title = device->name;
           card.subtitle = device->mediaClass.empty() ? "Device" : device->mediaClass;
           card.kind = "device";
+          card.deviceId = device->id;
         }
       } else if (node.clientId) {
         const auto client = std::ranges::find(snapshot.clients, *node.clientId, &GraphClient::id);
@@ -124,6 +125,22 @@ ComposedGraph composeGraph(const GraphSnapshot &snapshot) {
     auto &card = result.cards[found->second];
     card.nodeIds.push_back(node.id);
     result.nodeCards[node.id] = key;
+  }
+
+
+  for (const auto &device : snapshot.devices) {
+    const auto key = !device.stableId.empty() ? "device:" + device.stableId
+                                              : "runtime-device:" + std::to_string(device.id);
+    if (indices.contains(key)) continue;
+    GraphCard card;
+    card.key = key;
+    card.title = device.name;
+    card.subtitle = device.mediaClass.empty() ? "Device" : device.mediaClass;
+    card.kind = "device";
+    card.persistent = !device.stableId.empty();
+    card.deviceId = device.id;
+    indices.emplace(key, result.cards.size());
+    result.cards.push_back(std::move(card));
   }
 
   for (const auto &port : snapshot.ports) {

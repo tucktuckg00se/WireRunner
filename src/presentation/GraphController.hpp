@@ -66,7 +66,7 @@ public:
   QString noticeText() const { return noticeText_; }
   bool canUndo() const;
   bool canRedo() const;
-  bool commandPending() const { return pending_.has_value(); }
+  bool commandPending() const { return pending_.has_value() || pendingSetting_.has_value(); }
 
   void setMediaFilter(QString value);
   Q_INVOKABLE void moveCard(const QString &key, double x, double y);
@@ -91,6 +91,9 @@ public:
   Q_INVOKABLE void setAudioVolume(const QVariantMap &control, double percent);
   Q_INVOKABLE void setAudioChannelVolume(const QVariantMap &control, int channel, double percent);
   Q_INVOKABLE void setAudioMuted(const QVariantMap &control, bool muted);
+  Q_INVOKABLE void setDefaultTarget(const QString &kind, quint32 nodeId);
+  Q_INVOKABLE void setDeviceProfile(quint32 deviceId, int profileIndex);
+  Q_INVOKABLE void setDeviceRoute(quint32 deviceId, int routeIndex, int routeDeviceId);
   Q_INVOKABLE void undo();
   Q_INVOKABLE void redo();
 
@@ -108,9 +111,21 @@ signals:
 
 private:
   struct CardState { QPointF position; bool expanded{}; bool persistent{}; };
-  enum class HistoryKind { Created, Destroyed };
+  enum class HistoryKind { Created, Destroyed, DefaultChanged, ProfileChanged, RouteChanged };
   enum class OperationIntent { Normal, Undo, Redo };
-  struct HistoryAction { HistoryKind kind; GraphLink link; qint64 recordedAt{}; };
+  struct HistoryAction {
+    HistoryKind kind{HistoryKind::Created};
+    GraphLink link;
+    DefaultKind defaultKind{DefaultKind::AudioSink};
+    std::string previousName;
+    std::string targetName;
+    GlobalId deviceId{};
+    int previousIndex{-1};
+    int targetIndex{-1};
+    int previousRouteDeviceId{-1};
+    int targetRouteDeviceId{-1};
+    qint64 recordedAt{};
+  };
   struct PendingOperation {
     CommandId commandId{};
     bool creating{};
@@ -131,11 +146,27 @@ private:
     std::optional<bool> muted;
     qint64 deadline{};
   };
+  enum class SettingKind { Default, Profile, Route };
+  struct PendingSetting {
+    CommandId commandId{};
+    SettingKind kind{SettingKind::Default};
+    DefaultKind defaultKind{DefaultKind::AudioSink};
+    std::string targetName;
+    GlobalId deviceId{};
+    int targetIndex{-1};
+    int routeDeviceId{-1};
+    std::string previousName;
+    int previousIndex{-1};
+    int previousRouteDeviceId{-1};
+    OperationIntent intent{OperationIntent::Normal};
+    qint64 deadline{};
+  };
   void applySnapshot(std::shared_ptr<const GraphSnapshot> snapshot);
   void applyStatus(SourceStatus status);
   void applyCommandResult(CommandResult result);
   void applyAudioResult(GlobalId nodeId, CommandResult result);
   void applyRouteAudioResult(const QString &key, CommandResult result);
+  void applySettingResult(CommandResult result);
   void rebuildPresentation();
   void rebuildRouting();
   void updateSelection();
@@ -143,8 +174,10 @@ private:
   void submitCreate(GlobalId outputPortId, GlobalId inputPortId, bool feedback,
     OperationIntent intent = OperationIntent::Normal);
   void submitDestroy(const GraphLink &link, OperationIntent intent = OperationIntent::Normal);
+  void submitHistorySetting(const HistoryAction &action, OperationIntent intent);
   void resolvePending();
   void resolveAudioPending();
+  void resolveSettingPending();
   void completePending(const GraphLink &observed);
   void failPending(const QString &message);
   void setNotice(QString message);
@@ -175,6 +208,7 @@ private:
   std::optional<GlobalId> routeTargetPort_;
   QPointF routeCursor_;
   std::optional<PendingOperation> pending_;
+  std::optional<PendingSetting> pendingSetting_;
   QVector<HistoryAction> history_;
   qsizetype historyCursor_{};
   CommandId nextCommandId_{1};

@@ -34,6 +34,15 @@ public:
   void setDeviceRouteAudio(SetDeviceRouteAudioRequest request, CommandCallback callback) override {
     lastRouteAudio = std::move(request); audioCommand_ = std::move(callback);
   }
+  void setDefault(SetDefaultRequest request, CommandCallback callback) override {
+    lastDefault = std::move(request); command_ = std::move(callback);
+  }
+  void setDeviceProfile(SetDeviceProfileRequest request, CommandCallback callback) override {
+    lastProfile = std::move(request); command_ = std::move(callback);
+  }
+  void setDeviceRoute(SetDeviceRouteRequest request, CommandCallback callback) override {
+    lastRoute = std::move(request); command_ = std::move(callback);
+  }
   void respond(bool accepted, std::string message = {}) {
     QVERIFY(command_);
     const auto id = lastCreate.commandId != 0 && lastCreate.commandId >= lastDestroy.commandId
@@ -51,10 +60,25 @@ public:
     auto callback = std::move(audioCommand_);
     callback({lastRouteAudio.commandId, accepted, std::move(message)});
   }
+  void respondDefault(bool accepted, std::string message = {}) {
+    QVERIFY(command_); auto callback = std::move(command_);
+    callback({lastDefault.commandId, accepted, std::move(message)});
+  }
+  void respondProfile(bool accepted, std::string message = {}) {
+    QVERIFY(command_); auto callback = std::move(command_);
+    callback({lastProfile.commandId, accepted, std::move(message)});
+  }
+  void respondRoute(bool accepted, std::string message = {}) {
+    QVERIFY(command_); auto callback = std::move(command_);
+    callback({lastRoute.commandId, accepted, std::move(message)});
+  }
   CreateLinkRequest lastCreate;
   DestroyLinkRequest lastDestroy;
   SetNodeAudioRequest lastAudio;
   SetDeviceRouteAudioRequest lastRouteAudio;
+  SetDefaultRequest lastDefault;
+  SetDeviceProfileRequest lastProfile;
+  SetDeviceRouteRequest lastRoute;
 private:
   SnapshotCallback snapshot_;
   StatusCallback status_;
@@ -327,7 +351,7 @@ private slots:
       .hasVolume = true, .hasMute = true, .writable = true};
     graph.devices = {{50, "Studio interface", "usb-focusrite", "Audio/Device",
       {{.index = 7, .deviceIndex = 0, .direction = PortDirection::Output,
-        .name = "analog-output", .description = "Playback", .audio = routeAudio}}}};
+        .name = "analog-output", .description = "Playback", .active = true, .audio = routeAudio}}}};
     graph.nodes = {{.id = 5, .name = "Studio playback", .technicalName = "alsa_output.test",
       .stableId = "playback", .mediaClass = "Audio/Sink", .state = "running", .media = MediaType::Audio,
       .role = NodeRole::Destination, .clientId = std::nullopt, .deviceId = 50, .profileDeviceId = 0,
@@ -357,6 +381,65 @@ private slots:
     QCOMPARE(backend->lastRouteAudio.channelVolumes[0], 0.25F);
     QCOMPARE(backend->lastRouteAudio.channelVolumes[1], 0.125F);
     QCOMPARE(backend->lastRouteAudio.channelVolumes[2], 0.125F);
+  }
+
+  void confirmsDefaultsProfilesAndRoutesFromSnapshots() {
+    QTemporaryDir directory;
+    auto source = std::make_unique<ControllableGraphSource>();
+    auto *backend = source.get();
+    GraphController controller(std::move(source), directory.filePath("layout.json"));
+    controller.start();
+    GraphSnapshot graph;
+    graph.revision = 1; graph.remoteName = "pipewire-0";
+    graph.devices = {{.id = 50, .name = "Interface", .stableId = "usb-interface", .mediaClass = "Audio/Device",
+      .routes = {
+        {.index = 1, .deviceIndex = 0, .direction = PortDirection::Output, .name = "speakers",
+          .description = "Speakers", .availability = Availability::Available, .active = true},
+        {.index = 2, .deviceIndex = 0, .direction = PortDirection::Output, .name = "headphones",
+          .description = "Headphones", .availability = Availability::Available, .active = false}},
+      .profiles = {
+        {.index = 10, .name = "stereo", .description = "Stereo", .availability = Availability::Available, .active = true},
+        {.index = 20, .name = "pro-audio", .description = "Pro Audio", .availability = Availability::Available, .active = false}},
+      .writable = true}};
+    graph.nodes = {{.id = 5, .name = "Interface output", .technicalName = "alsa_output.interface",
+      .stableId = "output", .mediaClass = "Audio/Sink", .state = "running", .media = MediaType::Audio,
+      .role = NodeRole::Destination, .deviceId = 50, .profileDeviceId = 0}};
+    graph.ports = {{51, 5, "playback", "FL,FR", PortDirection::Input, MediaType::Audio}};
+    graph.defaults = {{DefaultKind::AudioSink, "old.output", "old.output"}};
+    backend->publish(graph);
+    controller.selectCard(QStringLiteral("device:usb-interface"));
+    QCOMPARE(controller.selected().value("profiles").toList().size(), 2);
+    QCOMPARE(controller.selected().value("routeOptions").toList().size(), 2);
+    QCOMPARE(controller.selected().value("defaultActions").toList().size(), 1);
+
+    controller.setDefaultTarget(QStringLiteral("audioSink"), 5);
+    QCOMPARE(backend->lastDefault.nodeName, std::string("alsa_output.interface"));
+    backend->respondDefault(true, "accepted");
+    graph.revision = 2;
+    graph.defaults[0] = {DefaultKind::AudioSink, "alsa_output.interface", "alsa_output.interface"};
+    backend->publish(graph);
+    QVERIFY(controller.canUndo());
+
+    controller.setDeviceProfile(50, 20);
+    QCOMPARE(backend->lastProfile.profileIndex, 20);
+    backend->respondProfile(true, "accepted");
+    const auto nodes = graph.nodes;
+    const auto ports = graph.ports;
+    graph.revision = 3; graph.nodes.clear(); graph.ports.clear();
+    backend->publish(graph);
+    QCOMPARE(controller.selectedKey(), QStringLiteral("device:usb-interface"));
+    graph.revision = 4; graph.nodes = nodes; graph.ports = ports;
+    graph.devices[0].profiles[0].active = false; graph.devices[0].profiles[1].active = true;
+    backend->publish(graph);
+
+    controller.setDeviceRoute(50, 2, 0);
+    QCOMPARE(backend->lastRoute.routeIndex, 2);
+    backend->respondRoute(true, "accepted");
+    graph.revision = 5; graph.devices[0].routes[0].active = false; graph.devices[0].routes[1].active = true;
+    backend->publish(graph);
+    controller.undo();
+    QCOMPARE(backend->lastRoute.routeIndex, 1);
+    QCOMPARE(backend->lastRoute.routeDeviceId, 0);
   }
 
   void reportsPolicyRestoredRoutesWithoutFightingThem() {

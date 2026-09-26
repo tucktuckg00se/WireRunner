@@ -13,6 +13,9 @@ public:
   void destroyLink(DestroyLinkRequest request, CommandCallback callback) override;
   void setNodeAudio(SetNodeAudioRequest request, CommandCallback callback) override;
   void setDeviceRouteAudio(SetDeviceRouteAudioRequest request, CommandCallback callback) override;
+  void setDefault(SetDefaultRequest request, CommandCallback callback) override;
+  void setDeviceProfile(SetDeviceProfileRequest request, CommandCallback callback) override;
+  void setDeviceRoute(SetDeviceRouteRequest request, CommandCallback callback) override;
   static GraphSnapshot load(const QString &path);
 private:
   QString path_;

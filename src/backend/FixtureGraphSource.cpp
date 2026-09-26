@@ -39,8 +39,16 @@ DeviceRoute deviceRoute(const QJsonObject &o) {
   return {.index = o.value("index").toInt(-1), .deviceIndex = o.value("deviceIndex").toInt(-1),
     .direction = o.value("direction").toString() == QStringLiteral("input")
       ? PortDirection::Input : PortDirection::Output,
-    .name = text(o, "name"), .description = text(o, "description"),
+    .name = text(o, "name"), .description = text(o, "description"), .priority = o.value("priority").toInt(),
+    .availability = o.value("available").toBool(true) ? Availability::Available : Availability::Unavailable,
+    .active = o.value("active").toBool(true),
     .audio = audioControl(QJsonObject{{QStringLiteral("audio"), o.value("audio")}}).value_or(NodeAudioControl{})};
+}
+DeviceProfile deviceProfile(const QJsonObject &o) {
+  return {.index = o.value("index").toInt(-1), .name = text(o, "name"),
+    .description = text(o, "description"), .priority = o.value("priority").toInt(),
+    .availability = o.value("available").toBool(true) ? Availability::Available : Availability::Unavailable,
+    .active = o.value("active").toBool()};
 }
 }
 
@@ -67,8 +75,9 @@ GraphSnapshot FixtureGraphSource::load(const QString &path) {
   for (const auto value : root.value("devices").toArray()) {
     const auto o = value.toObject();
     GraphDevice device{.id = id(o,"id"), .name = text(o,"name"), .stableId = text(o,"stableId"),
-      .mediaClass = text(o,"mediaClass"), .routes = {}};
+      .mediaClass = text(o,"mediaClass"), .routes = {}, .profiles = {}, .writable = o.value("writable").toBool(false)};
     for (const auto route : o.value("routes").toArray()) device.routes.push_back(deviceRoute(route.toObject()));
+    for (const auto profile : o.value("profiles").toArray()) device.profiles.push_back(deviceProfile(profile.toObject()));
     out.devices.push_back(std::move(device));
   }
   for (const auto value : root.value("nodes").toArray()) {
@@ -90,6 +99,12 @@ GraphSnapshot FixtureGraphSource::load(const QString &path) {
     const auto o = value.toObject();
     out.links.push_back({id(o,"id"), id(o,"outputNodeId"), id(o,"outputPortId"),
       id(o,"inputNodeId"), id(o,"inputPortId"), text(o,"state"), media(o)});
+  }
+  for (const auto value : root.value("defaults").toArray()) {
+    const auto o = value.toObject();
+    const auto kind = o.value("kind").toString() == QStringLiteral("audioSink") ? DefaultKind::AudioSink
+      : o.value("kind").toString() == QStringLiteral("audioSource") ? DefaultKind::AudioSource : DefaultKind::VideoSource;
+    out.defaults.push_back({kind, text(o, "configuredName"), text(o, "effectiveName")});
   }
   classifyNodeRoles(out);
   return out;
@@ -117,6 +132,15 @@ void FixtureGraphSource::setNodeAudio(SetNodeAudioRequest request, CommandCallba
   callback({request.commandId, false, "The demonstration graph is read-only"});
 }
 void FixtureGraphSource::setDeviceRouteAudio(SetDeviceRouteAudioRequest request, CommandCallback callback) {
+  callback({request.commandId, false, "The demonstration graph is read-only"});
+}
+void FixtureGraphSource::setDefault(SetDefaultRequest request, CommandCallback callback) {
+  callback({request.commandId, false, "The demonstration graph is read-only"});
+}
+void FixtureGraphSource::setDeviceProfile(SetDeviceProfileRequest request, CommandCallback callback) {
+  callback({request.commandId, false, "The demonstration graph is read-only"});
+}
+void FixtureGraphSource::setDeviceRoute(SetDeviceRouteRequest request, CommandCallback callback) {
   callback({request.commandId, false, "The demonstration graph is read-only"});
 }
 } // namespace wirerunner

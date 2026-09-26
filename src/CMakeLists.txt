@@ -25,7 +25,7 @@ target_link_libraries(wirerunner PRIVATE
 qt_add_qml_module(wirerunner
   URI WireRunner
   VERSION 1.0
-  QML_FILES qml/Main.qml qml/GraphCard.qml qml/GraphText.qml qml/InspectorPane.qml
+  QML_FILES qml/Main.qml qml/GraphCard.qml qml/GraphText.qml qml/InspectorPane.qml qml/LevelControl.qml
 )
 
 qt_add_resources(wirerunner wirerunner_resources

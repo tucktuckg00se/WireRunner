@@ -102,6 +102,11 @@ Rectangle {
                 Rectangle { width: 7; height: 7; radius: 4; color: root.card.state === "running" ? "#68d18b" : "#697680"; anchors.verticalCenter: parent.verticalCenter }
                 GraphText { text: root.card.state; color: "#b8c1c8"; font.pixelSize: 11 }
                 GraphText { visible: root.card.nodeCount > 1; text: root.card.nodeCount + " nodes"; color: "#77838d"; font.pixelSize: 11 }
+                GraphText {
+                    visible: (root.card.defaultBadges || []).length > 0
+                    text: (root.card.defaultBadges || []).join(" · ")
+                    color: "#7da7e8"; font.pixelSize: 9
+                }
             }
         }
         ToolButton {
@@ -139,21 +144,17 @@ Rectangle {
                 text: inlineMixer.control.direction === "capture" ? "Input" : "Out 1–2"
                 color: "#9ba6af"; font.pixelSize: 9; elide: Text.ElideRight
             }
-            Slider {
+            LevelControl {
                 id: inlineVolume
                 objectName: "inlineVolume"
-                width: 105; anchors.verticalCenter: parent.verticalCenter
+                width: 135; height: 28; anchors.verticalCenter: parent.verticalCenter
                 from: inlineMixer.control.minimum || 0
                 to: inlineMixer.control.maximum || 100
                 value: inlineMixer.control.volume || 0
-                enabled: Boolean(inlineMixer.control.writable) && Boolean(inlineMixer.control.hasVolume)
-                onMoved: inlineCommit.restart()
-                onPressedChanged: if (!pressed && inlineCommit.running) { inlineCommit.stop(); inlineMixer.commit() }
-                Accessible.name: root.card.title + " first two channel volume"
-            }
-            GraphText {
-                width: 30; anchors.verticalCenter: parent.verticalCenter
-                text: Math.round(inlineVolume.value) + "%"; color: "#cbd2d7"; font.pixelSize: 9
+                controlEnabled: Boolean(inlineMixer.control.writable) && Boolean(inlineMixer.control.hasVolume)
+                compact: true
+                accessibleName: root.card.title + " first two channel volume"
+                onCommitted: percent => root.volumeRequested(inlineMixer.control, percent)
             }
             ToolButton {
                 width: 28; height: 28; anchors.verticalCenter: parent.verticalCenter
@@ -165,7 +166,6 @@ Rectangle {
                 Accessible.name: (checked ? "Unmute " : "Mute ") + root.card.title
             }
         }
-        Timer { id: inlineCommit; interval: 100; onTriggered: inlineMixer.commit() }
     }
 
     Repeater {
