@@ -11,8 +11,9 @@ Rectangle {
     signal clearFocusRequested
     signal toggleRequested(string key)
     signal disconnectRequested
-    signal volumeRequested(int nodeId, real percent)
-    signal muteRequested(int nodeId, bool muted)
+    signal volumeRequested(var control, real percent)
+    signal channelVolumeRequested(var control, int channel, real percent)
+    signal muteRequested(var control, bool muted)
 
     color: "#1d2328"
     border.color: "#3c4650"
@@ -84,17 +85,17 @@ Rectangle {
                         model: root.selection.audioControls || []
                         delegate: Rectangle {
                             id: audioControl
-                            objectName: "audioControl-" + modelData.nodeId
+                            objectName: "audioControl-" + (modelData.nodeId || (modelData.deviceId + "-" + modelData.routeIndex))
                             required property var modelData
                             Layout.fillWidth: true
-                            Layout.preferredHeight: modelData.writable ? 112 : 132
+                            Layout.preferredHeight: (modelData.writable ? 112 : 132) + (modelData.channels || []).length * 43
                             color: "#252c32"
                             border.color: modelData.pending ? "#7da7e8" : "#354049"
                             radius: 3
 
                             function commitVolume() {
                                 if (!modelData.writable || !modelData.hasVolume) return
-                                root.volumeRequested(modelData.nodeId, volumeSlider.value)
+                                root.volumeRequested(modelData.targetKind === "route" ? modelData : modelData.nodeId, volumeSlider.value)
                             }
                             function decibelLabel(percent) {
                                 if (percent <= 0) return "−∞ dB"
@@ -107,16 +108,22 @@ Rectangle {
                                 spacing: 5
                                 RowLayout {
                                     Layout.fillWidth: true
-                                    Text { Layout.fillWidth: true; text: audioControl.modelData.name; color: "#e1e5e8"; font.pixelSize: 11; elide: Text.ElideRight }
+                                    Text {
+                                        Layout.fillWidth: true
+                                        text: audioControl.modelData.direction
+                                            ? (audioControl.modelData.direction === "capture" ? "Capture · " : "Playback · ") + audioControl.modelData.name
+                                            : audioControl.modelData.name
+                                        color: "#e1e5e8"; font.pixelSize: 11; elide: Text.ElideRight
+                                    }
                                     Text { visible: volumeSlider.value > 100.05; text: "Boosted"; color: "#e6b765"; font.pixelSize: 9 }
                                     Button {
-                                        objectName: "muteButton-" + audioControl.modelData.nodeId
+                                        objectName: "muteButton-" + (audioControl.modelData.nodeId || audioControl.modelData.deviceId)
                                         visible: audioControl.modelData.hasMute
                                         enabled: audioControl.modelData.writable
                                         checkable: true
                                         checked: audioControl.modelData.muted
                                         text: checked ? "Muted" : "Mute"
-                                        onClicked: root.muteRequested(audioControl.modelData.nodeId, checked)
+                                        onClicked: root.muteRequested(audioControl.modelData.targetKind === "route" ? audioControl.modelData : audioControl.modelData.nodeId, checked)
                                         Accessible.name: (checked ? "Unmute " : "Mute ") + audioControl.modelData.name
                                     }
                                 }
@@ -145,6 +152,41 @@ Rectangle {
                                         text: Math.round(volumeSlider.value) + "%  " + audioControl.decibelLabel(volumeSlider.value)
                                         color: volumeSlider.value > 100.05 ? "#e6b765" : "#cbd2d7"
                                         font.pixelSize: 10
+                                    }
+                                }
+                                Repeater {
+                                    model: audioControl.modelData.channels || []
+                                    delegate: RowLayout {
+                                        required property var modelData
+                                        Layout.fillWidth: true
+                                        Text {
+                                            Layout.preferredWidth: 72
+                                            text: modelData.name; color: "#9ba6af"; font.pixelSize: 9; elide: Text.ElideRight
+                                        }
+                                        Slider {
+                                            id: channelSlider
+                                            Layout.fillWidth: true
+                                            from: modelData.minimum; to: modelData.maximum; value: modelData.volume
+                                            enabled: audioControl.modelData.writable
+                                            stepSize: 1
+                                            onMoved: channelCommit.restart()
+                                            onPressedChanged: if (!pressed && channelCommit.running) {
+                                                channelCommit.stop()
+                                                root.channelVolumeRequested(audioControl.modelData, modelData.index, value)
+                                            }
+                                            Accessible.name: audioControl.modelData.name + " " + modelData.name + " volume"
+                                        }
+                                        Text {
+                                            Layout.preferredWidth: 26
+                                            visible: audioControl.modelData.targetKind === "route"
+                                            text: modelData.soft ? "Soft" : "HW"
+                                            color: "#77838d"; font.pixelSize: 8; horizontalAlignment: Text.AlignRight
+                                            ToolTip.visible: provenanceHover.hovered
+                                            ToolTip.text: modelData.soft ? "Software volume reported by PipeWire" : "Device route volume"
+                                            HoverHandler { id: provenanceHover }
+                                        }
+                                        Text { Layout.preferredWidth: 34; text: Math.round(channelSlider.value) + "%"; color: "#cbd2d7"; font.pixelSize: 9; horizontalAlignment: Text.AlignRight }
+                                        Timer { id: channelCommit; interval: 100; onTriggered: root.channelVolumeRequested(audioControl.modelData, modelData.index, channelSlider.value) }
                                     }
                                 }
                                 Text {

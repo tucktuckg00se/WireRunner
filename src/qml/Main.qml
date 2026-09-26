@@ -26,6 +26,7 @@ ApplicationWindow {
             if (card && card.focusFirstCompatibleInput()) return
         }
     }
+    property var liveCard: ({})
 
     header: Rectangle {
         height: 54
@@ -96,7 +97,6 @@ ApplicationWindow {
                     }
                     Accessible.description: "Press Enter to select and reveal a matching graph object"
                 }
-                Button { text: "Fit"; onClicked: viewport.fitGraph(true) }
             }
         }
 
@@ -169,7 +169,12 @@ ApplicationWindow {
                                 routing: graph.routing
                                 onSelectedRequested: graph.selectCard(item.key)
                                 onToggleRequested: graph.toggleCard(item.key)
-                                onMoved: (x, y) => graph.moveCard(item.key, x, y)
+                                onMoveStarted: (x, y) => window.liveCard = ({key: item.key, baseX: item.x, baseY: item.y, x: x, y: y})
+                                onMoving: (x, y) => window.liveCard = ({key: item.key, baseX: item.x, baseY: item.y, x: x, y: y})
+                                onMoved: function(x, y) {
+                                    graph.moveCard(item.key, x, y)
+                                    window.liveCard = ({})
+                                }
                                 onExpandForRoutingRequested: graph.expandForRouting(item.key)
                                 onRouteStarted: function(portId, x, y) {
                                     graph.beginRoute(portId, x, y)
@@ -178,18 +183,13 @@ ApplicationWindow {
                                 onRouteMoved: (x, y) => graph.updateRoute(x, y)
                                 onRouteFinished: (x, y) => graph.finishRoute(x, y)
                                 onRouteTargetRequested: portId => graph.finishRouteToPort(portId)
+                                onVolumeRequested: (control, percent) => graph.setAudioVolume(control, percent)
+                                onMuteRequested: (control, muted) => graph.setAudioMuted(control, muted)
                             }
                         }
 
                     }
 
-                    WheelHandler {
-                        target: null
-                        onWheel: function(event) {
-                            viewport.setZoom(viewport.zoom * Math.pow(1.0015, event.angleDelta.y), event.x, event.y)
-                            event.accepted = true
-                        }
-                    }
                     PinchHandler {
                         id: pinch
                         target: null
@@ -211,8 +211,17 @@ ApplicationWindow {
                     mediaFilter: graph.mediaFilter
                     selectedKey: graph.selectedKey
                     routePreview: graph.routing
+                    liveCard: window.liveCard
                     z: 3
                     onLinkActivated: key => graph.selectLink(key)
+                }
+
+                WheelHandler {
+                    target: null
+                    onWheel: function(event) {
+                        viewport.setZoom(viewport.zoom * Math.pow(1.0015, event.angleDelta.y), event.x, event.y)
+                        event.accepted = true
+                    }
                 }
 
                 Rectangle {
@@ -236,6 +245,7 @@ ApplicationWindow {
                         ToolButton { text: "−"; width: 30; height: 28; onClicked: viewport.setZoom(viewport.zoom / 1.15, viewport.width / 2, viewport.height / 2) }
                         Text { width: 42; anchors.verticalCenter: parent.verticalCenter; horizontalAlignment: Text.AlignHCenter; text: Math.round(viewport.zoom * 100) + "%"; color: "#b8c1c8"; font.pixelSize: 10 }
                         ToolButton { text: "+"; width: 30; height: 28; onClicked: viewport.setZoom(viewport.zoom * 1.15, viewport.width / 2, viewport.height / 2) }
+                        Button { text: "Fit"; height: 28; onClicked: viewport.fitGraph(true) }
                     }
                 }
 
@@ -261,8 +271,9 @@ ApplicationWindow {
                 onClearFocusRequested: graph.clearFocus()
                 onToggleRequested: key => graph.toggleCard(key)
                 onDisconnectRequested: graph.disconnectSelected()
-                onVolumeRequested: (nodeId, percent) => graph.setNodeVolume(nodeId, percent)
-                onMuteRequested: (nodeId, muted) => graph.setNodeMuted(nodeId, muted)
+                onVolumeRequested: (control, percent) => typeof control === "number" ? graph.setNodeVolume(control, percent) : graph.setAudioVolume(control, percent)
+                onChannelVolumeRequested: (control, channel, percent) => graph.setAudioChannelVolume(control, channel, percent)
+                onMuteRequested: (control, muted) => typeof control === "number" ? graph.setNodeMuted(control, muted) : graph.setAudioMuted(control, muted)
             }
         }
     }

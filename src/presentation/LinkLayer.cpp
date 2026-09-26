@@ -36,9 +36,17 @@ double segmentDistance(QPointF point, QPointF a, QPointF b) {
   const double position = std::clamp(QPointF::dotProduct(point-a,segment)/length,0.0,1.0);
   return QLineF(point,a+segment*position).length();
 }
-QHash<QString, QPointF> anchorPoints(const QVariantList &anchors) {
+QHash<QString, QPointF> anchorPoints(const QVariantList &anchors, const QVariantMap &liveCard) {
   QHash<QString,QPointF> points;
-  for(const auto &value:anchors){const auto anchor=value.toMap();points.insert(anchor.value("key").toString(),{anchor.value("x").toDouble(),anchor.value("y").toDouble()});}
+  const auto liveKey = liveCard.value(QStringLiteral("key")).toString();
+  const QPointF offset(liveCard.value(QStringLiteral("x")).toDouble() - liveCard.value(QStringLiteral("baseX")).toDouble(),
+    liveCard.value(QStringLiteral("y")).toDouble() - liveCard.value(QStringLiteral("baseY")).toDouble());
+  for (const auto &value : anchors) {
+    const auto anchor = value.toMap();
+    QPointF point(anchor.value(QStringLiteral("x")).toDouble(), anchor.value(QStringLiteral("y")).toDouble());
+    if (!liveKey.isEmpty() && anchor.value(QStringLiteral("cardKey")).toString() == liveKey) point += offset;
+    points.insert(anchor.value(QStringLiteral("key")).toString(), point);
+  }
   return points;
 }
 }
@@ -56,9 +64,10 @@ void LinkLayer::setContentY(double value) { if(qFuzzyCompare(contentY_,value))re
 void LinkLayer::setMediaFilter(QString value) { if(mediaFilter_==value)return; mediaFilter_=std::move(value); emit mediaFilterChanged(); update(); }
 void LinkLayer::setSelectedKey(QString value) { if(selectedKey_==value)return; selectedKey_=std::move(value); emit selectedKeyChanged(); update(); }
 void LinkLayer::setRoutePreview(QVariantMap value) { if(routePreview_==value)return; routePreview_=std::move(value); emit routePreviewChanged(); update(); }
+void LinkLayer::setLiveCard(QVariantMap value) { if(liveCard_==value)return; liveCard_=std::move(value); emit liveCardChanged(); update(); }
 
 void LinkLayer::paint(QPainter *painter) {
-  const auto graphPoints = anchorPoints(portAnchors_);
+  const auto graphPoints = anchorPoints(portAnchors_, liveCard_);
   QHash<QString,QPointF> points;
   for (auto point = graphPoints.cbegin(); point != graphPoints.cend(); ++point)
     points.insert(point.key(), {point->x()*viewScale_-contentX_, point->y()*viewScale_-contentY_});
@@ -66,8 +75,11 @@ void LinkLayer::paint(QPainter *painter) {
   QRegion visibleRegion(QRect(0, 0, static_cast<int>(width()), static_cast<int>(height())));
   for (const auto &value : blockers_) {
     const auto blocker = value.toMap();
-    const QRect rect(static_cast<int>(blocker.value("x").toDouble()*viewScale_-contentX_),
-      static_cast<int>(blocker.value("y").toDouble()*viewScale_-contentY_),
+    const auto live = !liveCard_.isEmpty() && blocker.value(QStringLiteral("key")) == liveCard_.value(QStringLiteral("key"));
+    const auto x = live ? liveCard_.value(QStringLiteral("x")).toDouble() : blocker.value(QStringLiteral("x")).toDouble();
+    const auto y = live ? liveCard_.value(QStringLiteral("y")).toDouble() : blocker.value(QStringLiteral("y")).toDouble();
+    const QRect rect(static_cast<int>(x*viewScale_-contentX_),
+      static_cast<int>(y*viewScale_-contentY_),
       static_cast<int>(blocker.value("width").toDouble()*viewScale_),
       static_cast<int>(blocker.value("height").toDouble()*viewScale_));
     visibleRegion -= rect.adjusted(1, 1, -1, -1);
@@ -105,7 +117,7 @@ void LinkLayer::paint(QPainter *painter) {
 }
 
 void LinkLayer::mousePressEvent(QMouseEvent *event) {
-  const auto graphPoints = anchorPoints(portAnchors_);
+  const auto graphPoints = anchorPoints(portAnchors_, liveCard_);
   QHash<QString,QPointF> points;
   for (auto point = graphPoints.cbegin(); point != graphPoints.cend(); ++point)
     points.insert(point.key(), {point->x()*viewScale_-contentX_, point->y()*viewScale_-contentY_});

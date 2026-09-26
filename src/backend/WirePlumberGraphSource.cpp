@@ -4,6 +4,7 @@
 #include <wp/wp.h>
 #include <pipewire/permission.h>
 #include <spa/param/props.h>
+#include <spa/param/route.h>
 #include <spa/pod/iter.h>
 
 #include <algorithm>
@@ -32,6 +33,14 @@ std::optional<GlobalId> numericProperty(WpPipewireObject *object, const char *ke
   const auto value = property(object, key);
   if (value.empty()) return std::nullopt;
   GlobalId result{};
+  const auto parsed = std::from_chars(value.data(), value.data() + value.size(), result);
+  return parsed.ec == std::errc{} ? std::optional{result} : std::nullopt;
+}
+
+std::optional<int> integerProperty(WpPipewireObject *object, const char *key) {
+  const auto value = property(object, key);
+  if (value.empty()) return std::nullopt;
+  int result{};
   const auto parsed = std::from_chars(value.data(), value.data() + value.size(), result);
   return parsed.ec == std::errc{} ? std::optional{result} : std::nullopt;
 }
@@ -104,18 +113,11 @@ void readVolumeRange(const spa_pod *pod, NodeAudioControl &audio) {
   }
 }
 
-std::optional<NodeAudioControl> nodeAudioControl(WpNode *node) {
-  auto *iterator = wp_pipewire_object_enum_params_sync(WP_PIPEWIRE_OBJECT(node), "Props", nullptr);
-  if (!iterator) return std::nullopt;
-  NodeAudioControl audio;
-  GValue item = G_VALUE_INIT;
-  while (wp_iterator_next(iterator, &item)) {
-    auto *wrapped = static_cast<WpSpaPod *>(g_value_get_boxed(&item));
-    const auto *pod = wrapped ? wp_spa_pod_get_spa_pod(wrapped) : nullptr;
-    if (pod && spa_pod_is_object(pod)) {
-      const auto *object = reinterpret_cast<const spa_pod_object *>(pod);
-      const spa_pod_prop *property = nullptr;
-      SPA_POD_OBJECT_FOREACH(object, property) {
+void readAudioProperties(const spa_pod *pod, NodeAudioControl &audio) {
+  if (!pod || !spa_pod_is_object(pod)) return;
+  const auto *object = reinterpret_cast<const spa_pod_object *>(pod);
+  const spa_pod_prop *property = nullptr;
+  SPA_POD_OBJECT_FOREACH(object, property) {
         if (property->key == SPA_PROP_volume) {
           float volume{};
           if (podFloat(&property->value, volume) && std::isfinite(volume) && volume >= 0.0F) {
@@ -132,6 +134,16 @@ std::optional<NodeAudioControl> nodeAudioControl(WpNode *node) {
             audio.volume = *std::ranges::max_element(audio.channelVolumes);
             audio.hasVolume = true;
           }
+        } else if (property->key == SPA_PROP_channelMap && spa_pod_is_array(&property->value) &&
+                   SPA_POD_ARRAY_VALUE_TYPE(&property->value) == SPA_TYPE_Id) {
+          const auto count = SPA_POD_ARRAY_N_VALUES(&property->value);
+          const auto *values = static_cast<const std::uint32_t *>(SPA_POD_ARRAY_VALUES(&property->value));
+          audio.channelMap.assign(values, values + count);
+        } else if (property->key == SPA_PROP_softVolumes && spa_pod_is_array(&property->value) &&
+                   SPA_POD_ARRAY_VALUE_TYPE(&property->value) == SPA_TYPE_Float) {
+          const auto count = SPA_POD_ARRAY_N_VALUES(&property->value);
+          const auto *values = static_cast<const float *>(SPA_POD_ARRAY_VALUES(&property->value));
+          audio.softVolumes.assign(values, values + count);
         } else if (property->key == SPA_PROP_mute) {
           bool muted{};
           if (spa_pod_get_bool(&property->value, &muted) >= 0) {
@@ -139,16 +151,72 @@ std::optional<NodeAudioControl> nodeAudioControl(WpNode *node) {
             audio.hasMute = true;
           }
         }
+  }
+}
+
+void finishAudioProperties(NodeAudioControl &audio) {
+  if (audio.channelVolumes.empty() && !audio.softVolumes.empty()) audio.channelVolumes = audio.softVolumes;
+  if (!audio.channelVolumes.empty()) {
+    audio.volume = *std::ranges::max_element(audio.channelVolumes);
+    audio.hasVolume = true;
+  }
+  if (audio.hasVolume) audio.maximumVolume = std::max(audio.maximumVolume, audio.volume);
+}
+
+std::optional<NodeAudioControl> nodeAudioControl(WpNode *node) {
+  auto *iterator = wp_pipewire_object_enum_params_sync(WP_PIPEWIRE_OBJECT(node), "Props", nullptr);
+  if (!iterator) return std::nullopt;
+  NodeAudioControl audio;
+  GValue item = G_VALUE_INIT;
+  while (wp_iterator_next(iterator, &item)) {
+    auto *wrapped = static_cast<WpSpaPod *>(g_value_get_boxed(&item));
+    readAudioProperties(wrapped ? wp_spa_pod_get_spa_pod(wrapped) : nullptr, audio);
+    g_value_unset(&item);
+  }
+  wp_iterator_unref(iterator);
+  finishAudioProperties(audio);
+  if (!audio.hasVolume && !audio.hasMute) return std::nullopt;
+  const auto permissions = wp_global_proxy_get_permissions(WP_GLOBAL_PROXY(node));
+  audio.writable = (permissions & PW_PERM_W) != 0 && (permissions & PW_PERM_X) != 0;
+  return audio;
+}
+
+std::vector<DeviceRoute> deviceRoutes(WpDevice *device) {
+  std::vector<DeviceRoute> routes;
+  auto *iterator = wp_pipewire_object_enum_params_sync(WP_PIPEWIRE_OBJECT(device), "Route", nullptr);
+  if (!iterator) return routes;
+  const auto permissions = wp_global_proxy_get_permissions(WP_GLOBAL_PROXY(device));
+  GValue item = G_VALUE_INIT;
+  while (wp_iterator_next(iterator, &item)) {
+    auto *wrapped = static_cast<WpSpaPod *>(g_value_get_boxed(&item));
+    const auto *pod = wrapped ? wp_spa_pod_get_spa_pod(wrapped) : nullptr;
+    if (pod && spa_pod_is_object(pod)) {
+      DeviceRoute route;
+      const auto *object = reinterpret_cast<const spa_pod_object *>(pod);
+      const spa_pod_prop *prop = nullptr;
+      SPA_POD_OBJECT_FOREACH(object, prop) {
+        if (prop->key == SPA_PARAM_ROUTE_index) spa_pod_get_int(&prop->value, &route.index);
+        else if (prop->key == SPA_PARAM_ROUTE_device) spa_pod_get_int(&prop->value, &route.deviceIndex);
+        else if (prop->key == SPA_PARAM_ROUTE_direction) {
+          std::uint32_t direction{};
+          if (spa_pod_get_id(&prop->value, &direction) >= 0)
+            route.direction = direction == SPA_DIRECTION_INPUT ? PortDirection::Input : PortDirection::Output;
+        } else if (prop->key == SPA_PARAM_ROUTE_name) {
+          const char *name = nullptr;
+          if (spa_pod_get_string(&prop->value, &name) >= 0 && name) route.name = name;
+        } else if (prop->key == SPA_PARAM_ROUTE_description) {
+          const char *description = nullptr;
+          if (spa_pod_get_string(&prop->value, &description) >= 0 && description) route.description = description;
+        } else if (prop->key == SPA_PARAM_ROUTE_props) readAudioProperties(&prop->value, route.audio);
       }
+      finishAudioProperties(route.audio);
+      route.audio.writable = (permissions & PW_PERM_W) != 0 && (permissions & PW_PERM_X) != 0;
+      if (route.audio.hasVolume || route.audio.hasMute) routes.push_back(std::move(route));
     }
     g_value_unset(&item);
   }
   wp_iterator_unref(iterator);
-  if (!audio.hasVolume && !audio.hasMute) return std::nullopt;
-  if (audio.hasVolume) audio.maximumVolume = std::max(audio.maximumVolume, audio.volume);
-  const auto permissions = wp_global_proxy_get_permissions(WP_GLOBAL_PROXY(node));
-  audio.writable = (permissions & PW_PERM_W) != 0 && (permissions & PW_PERM_X) != 0;
-  return audio;
+  return routes;
 }
 
 struct ActivationData {
@@ -320,6 +388,70 @@ void WirePlumberGraphSource::setNodeAudio(SetNodeAudioRequest request, CommandCa
   });
 }
 
+void WirePlumberGraphSource::setDeviceRouteAudio(SetDeviceRouteAudioRequest request, CommandCallback callback) {
+  {
+    std::scoped_lock lock(mutex_);
+    if (!context_) {
+      callback({request.commandId, false, "PipeWire is not connected"});
+      return;
+    }
+  }
+  invoke([this, request = std::move(request), callback = std::move(callback)]() mutable {
+    auto *object = findObject(manager_, WP_TYPE_DEVICE, request.deviceId);
+    if (!object) {
+      callback({request.commandId, false, "The selected device is no longer available"});
+      return;
+    }
+    const auto permissions = wp_global_proxy_get_permissions(WP_GLOBAL_PROXY(object));
+    if ((permissions & PW_PERM_W) == 0 || (permissions & PW_PERM_X) == 0) {
+      callback({request.commandId, false, "PipeWire does not allow this device route to be changed"});
+      return;
+    }
+    auto *propsBuilder = wp_spa_pod_builder_new_object("Spa:Pod:Object:Param:Props", "Props");
+    if (!request.channelVolumes.empty()) {
+      auto *arrayBuilder = wp_spa_pod_builder_new_array();
+      for (const auto value : request.channelVolumes) wp_spa_pod_builder_add_float(arrayBuilder, value);
+      auto *array = wp_spa_pod_builder_end(arrayBuilder);
+      wp_spa_pod_builder_unref(arrayBuilder);
+      wp_spa_pod_builder_add_property_id(propsBuilder, SPA_PROP_channelVolumes);
+      wp_spa_pod_builder_add_pod(propsBuilder, array);
+      wp_spa_pod_unref(array);
+    }
+    if (!request.channelMap.empty()) {
+      auto *arrayBuilder = wp_spa_pod_builder_new_array();
+      for (const auto value : request.channelMap) wp_spa_pod_builder_add_id(arrayBuilder, value);
+      auto *array = wp_spa_pod_builder_end(arrayBuilder);
+      wp_spa_pod_builder_unref(arrayBuilder);
+      wp_spa_pod_builder_add_property_id(propsBuilder, SPA_PROP_channelMap);
+      wp_spa_pod_builder_add_pod(propsBuilder, array);
+      wp_spa_pod_unref(array);
+    }
+    if (request.muted) {
+      wp_spa_pod_builder_add_property_id(propsBuilder, SPA_PROP_mute);
+      wp_spa_pod_builder_add_boolean(propsBuilder, *request.muted);
+    }
+    auto *props = wp_spa_pod_builder_end(propsBuilder);
+    wp_spa_pod_builder_unref(propsBuilder);
+
+    auto *routeBuilder = wp_spa_pod_builder_new_object("Spa:Pod:Object:Param:Route", "Route");
+    wp_spa_pod_builder_add_property_id(routeBuilder, SPA_PARAM_ROUTE_index);
+    wp_spa_pod_builder_add_int(routeBuilder, request.routeIndex);
+    wp_spa_pod_builder_add_property_id(routeBuilder, SPA_PARAM_ROUTE_device);
+    wp_spa_pod_builder_add_int(routeBuilder, request.routeDeviceId);
+    wp_spa_pod_builder_add_property_id(routeBuilder, SPA_PARAM_ROUTE_props);
+    wp_spa_pod_builder_add_pod(routeBuilder, props);
+    wp_spa_pod_builder_add_property_id(routeBuilder, SPA_PARAM_ROUTE_save);
+    wp_spa_pod_builder_add_boolean(routeBuilder, true);
+    auto *route = wp_spa_pod_builder_end(routeBuilder);
+    wp_spa_pod_builder_unref(routeBuilder);
+    wp_spa_pod_unref(props);
+    const bool accepted = route && wp_pipewire_object_set_param(WP_PIPEWIRE_OBJECT(object), "Route", 0, route);
+    if (route) wp_spa_pod_unref(route);
+    callback({request.commandId, accepted,
+      accepted ? "Device volume saved through WirePlumber" : "WirePlumber rejected the device volume change"});
+  });
+}
+
 void WirePlumberGraphSource::run(std::stop_token token) {
   statusCallback_({SourceState::Connecting, "Connecting to PipeWire…"});
   auto *context = g_main_context_new();
@@ -340,8 +472,11 @@ void WirePlumberGraphSource::run(std::stop_token token) {
   wp_object_manager_add_interest(manager, WP_TYPE_PORT, nullptr);
   wp_object_manager_add_interest(manager, WP_TYPE_LINK, nullptr);
   wp_object_manager_add_interest(manager, WP_TYPE_METADATA, nullptr);
-  for (const auto type : {WP_TYPE_CLIENT, WP_TYPE_DEVICE, WP_TYPE_PORT, WP_TYPE_LINK, WP_TYPE_METADATA})
+  for (const auto type : {WP_TYPE_CLIENT, WP_TYPE_PORT, WP_TYPE_LINK, WP_TYPE_METADATA})
     wp_object_manager_request_object_features(manager, type, WP_PIPEWIRE_OBJECT_FEATURES_MINIMAL);
+  wp_object_manager_request_object_features(manager, WP_TYPE_DEVICE,
+    static_cast<WpObjectFeatures>(WP_PIPEWIRE_OBJECT_FEATURES_MINIMAL) |
+      static_cast<WpObjectFeatures>(WP_PIPEWIRE_OBJECT_FEATURE_PARAM_ROUTE));
   wp_object_manager_request_object_features(manager, WP_TYPE_NODE,
     static_cast<WpObjectFeatures>(WP_PIPEWIRE_OBJECT_FEATURES_MINIMAL) |
       static_cast<WpObjectFeatures>(WP_NODE_FEATURE_PORTS) |
@@ -403,7 +538,8 @@ GraphSnapshot WirePlumberGraphSource::snapshot() {
     const auto objectId = wp_proxy_get_bound_id(WP_PROXY(value));
     auto name = firstProperty(object, {"device.description", "device.nick", "device.name"});
     if (name.empty()) name = "Device " + std::to_string(objectId);
-    graph.devices.push_back({objectId, std::move(name), firstProperty(object, {"device.serial", "device.name"}), property(object, "media.class")});
+    graph.devices.push_back({objectId, std::move(name), firstProperty(object, {"device.serial", "device.name"}),
+      property(object, "media.class"), deviceRoutes(WP_DEVICE(value))});
   });
   eachObject(manager_, WP_TYPE_NODE, [&](GObject *value) {
     auto *object = WP_PIPEWIRE_OBJECT(value);
@@ -416,7 +552,8 @@ GraphSnapshot WirePlumberGraphSource::snapshot() {
     graph.nodes.push_back({objectId, std::move(name), technicalName,
       firstProperty(object, {"node.name", "application.id", "device.serial", "object.serial"}),
       mediaClass, nodeState(WP_NODE(value)), classifyMedia(mediaClass), NodeRole::Processor,
-      numericProperty(object, "client.id"), numericProperty(object, "device.id"), std::move(audio)});
+      numericProperty(object, "client.id"), numericProperty(object, "device.id"),
+      integerProperty(object, "card.profile.device"), std::move(audio)});
   });
 
   std::unordered_map<GlobalId, MediaType> nodeMedia;

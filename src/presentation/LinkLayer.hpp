@@ -18,6 +18,7 @@ class LinkLayer : public QQuickPaintedItem {
   Q_PROPERTY(QString mediaFilter READ mediaFilter WRITE setMediaFilter NOTIFY mediaFilterChanged)
   Q_PROPERTY(QString selectedKey READ selectedKey WRITE setSelectedKey NOTIFY selectedKeyChanged)
   Q_PROPERTY(QVariantMap routePreview READ routePreview WRITE setRoutePreview NOTIFY routePreviewChanged)
+  Q_PROPERTY(QVariantMap liveCard READ liveCard WRITE setLiveCard NOTIFY liveCardChanged)
 
 public:
   explicit LinkLayer(QQuickItem *parent = nullptr);
@@ -30,6 +31,7 @@ public:
   QString mediaFilter() const { return mediaFilter_; }
   QString selectedKey() const { return selectedKey_; }
   QVariantMap routePreview() const { return routePreview_; }
+  QVariantMap liveCard() const { return liveCard_; }
   void setPortAnchors(QVariantList value);
   void setLinks(QVariantList value);
   void setBlockers(QVariantList value);
@@ -39,6 +41,7 @@ public:
   void setMediaFilter(QString value);
   void setSelectedKey(QString value);
   void setRoutePreview(QVariantMap value);
+  void setLiveCard(QVariantMap value);
 
 signals:
   void portAnchorsChanged();
@@ -48,6 +51,7 @@ signals:
   void mediaFilterChanged();
   void selectedKeyChanged();
   void routePreviewChanged();
+  void liveCardChanged();
   void linkActivated(QString key);
 
 protected:
@@ -61,6 +65,7 @@ private:
   QString mediaFilter_{"all"};
   QString selectedKey_;
   QVariantMap routePreview_;
+  QVariantMap liveCard_;
   double viewScale_{1.0};
   double contentX_{};
   double contentY_{};

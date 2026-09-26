@@ -88,6 +88,9 @@ public:
   Q_INVOKABLE void disconnectSelected();
   Q_INVOKABLE void setNodeVolume(quint32 nodeId, double percent);
   Q_INVOKABLE void setNodeMuted(quint32 nodeId, bool muted);
+  Q_INVOKABLE void setAudioVolume(const QVariantMap &control, double percent);
+  Q_INVOKABLE void setAudioChannelVolume(const QVariantMap &control, int channel, double percent);
+  Q_INVOKABLE void setAudioMuted(const QVariantMap &control, bool muted);
   Q_INVOKABLE void undo();
   Q_INVOKABLE void redo();
 
@@ -120,10 +123,19 @@ private:
     std::optional<bool> muted;
     qint64 deadline{};
   };
+  struct PendingRouteAudio {
+    CommandId commandId{};
+    GlobalId deviceId{};
+    int routeIndex{-1};
+    std::vector<float> channelVolumes;
+    std::optional<bool> muted;
+    qint64 deadline{};
+  };
   void applySnapshot(std::shared_ptr<const GraphSnapshot> snapshot);
   void applyStatus(SourceStatus status);
   void applyCommandResult(CommandResult result);
   void applyAudioResult(GlobalId nodeId, CommandResult result);
+  void applyRouteAudioResult(const QString &key, CommandResult result);
   void rebuildPresentation();
   void rebuildRouting();
   void updateSelection();
@@ -169,6 +181,7 @@ private:
   QTimer commandTimer_;
   QTimer audioTimer_;
   QHash<GlobalId, PendingAudio> pendingAudio_;
+  QHash<QString, PendingRouteAudio> pendingRouteAudio_;
   double canvasWidth_{1000.0};
   double canvasHeight_{650.0};
 };

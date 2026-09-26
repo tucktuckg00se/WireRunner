@@ -15,9 +15,13 @@ state. Drag an exact output port to an input port to add a route without
 replacing existing links. Selected wires can be disconnected individually, and
 successful routing changes support session-local undo and redo. Probable cycles
 require explicit confirmation and are created as PipeWire feedback links.
-Selecting an audio object exposes one master volume and mute control for each
-real audio node it contains. Changes are submitted through libwireplumber and
-reconciled with the observed PipeWire state.
+Device cards expose a compact first-pair volume and mute control. The inspector
+shows every channel exposed by the active WirePlumber device Route, including
+separate playback and capture routes, while application cards retain their
+per-node controls. Device changes are written back as remembered Route state;
+node changes are reconciled with the observed PipeWire state. The Fit action now
+lives with the zoom controls, the mouse wheel zooms around the pointer, and
+wires follow cards continuously while they move.
 
 The demonstration graph remains read-only. Live mutations use libwireplumber's
 link factory on the dedicated GLib backend thread and are considered complete

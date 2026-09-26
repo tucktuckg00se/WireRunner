@@ -33,6 +33,7 @@ TestCase {
     SignalSpy { id: selectedSpy; target: card; signalName: "selectedRequested" }
     SignalSpy { id: toggleSpy; target: card; signalName: "toggleRequested" }
     SignalSpy { id: movedSpy; target: card; signalName: "moved" }
+    SignalSpy { id: movingSpy; target: card; signalName: "moving" }
     SignalSpy { id: expandRouteSpy; target: card; signalName: "expandForRoutingRequested" }
     SignalSpy { id: routeStartedSpy; target: card; signalName: "routeStarted" }
     SignalSpy { id: routeMovedSpy; target: card; signalName: "routeMoved" }
@@ -47,6 +48,7 @@ TestCase {
         selectedSpy.clear()
         toggleSpy.clear()
         movedSpy.clear()
+        movingSpy.clear()
         expandRouteSpy.clear()
         routeStartedSpy.clear()
         routeMovedSpy.clear()
@@ -73,6 +75,7 @@ TestCase {
         mouseMove(card, 130, 100, 100)
         mouseRelease(card, 130, 100, Qt.LeftButton)
         tryCompare(movedSpy, "count", 1)
+        verify(movingSpy.count >= 1)
     }
 
     function test_singleOutputGroupStartsCanonicalWireGesture() {

@@ -17,17 +17,34 @@ enum class PortDirection { Input, Output };
 enum class NodeRole { Source, Processor, Destination };
 
 struct GraphClient { GlobalId id{}; std::string name; std::string stableId; };
-struct GraphDevice { GlobalId id{}; std::string name; std::string stableId; std::string mediaClass; };
-
 struct NodeAudioControl {
   float volume{1.0F};
   std::vector<float> channelVolumes;
+  std::vector<std::uint32_t> channelMap;
+  std::vector<float> softVolumes;
   float minimumVolume{};
   float maximumVolume{1.0F};
   bool muted{};
   bool hasVolume{};
   bool hasMute{};
   bool writable{};
+};
+
+struct DeviceRoute {
+  int index{-1};
+  int deviceIndex{-1};
+  PortDirection direction{PortDirection::Output};
+  std::string name;
+  std::string description;
+  NodeAudioControl audio;
+};
+
+struct GraphDevice {
+  GlobalId id{};
+  std::string name;
+  std::string stableId;
+  std::string mediaClass;
+  std::vector<DeviceRoute> routes;
 };
 
 struct GraphNode {
@@ -41,6 +58,7 @@ struct GraphNode {
   NodeRole role{NodeRole::Processor};
   std::optional<GlobalId> clientId;
   std::optional<GlobalId> deviceId;
+  std::optional<int> profileDeviceId;
   std::optional<NodeAudioControl> audio;
 };
 

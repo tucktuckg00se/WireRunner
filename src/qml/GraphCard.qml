@@ -10,11 +10,15 @@ Rectangle {
     signal selectedRequested
     signal toggleRequested
     signal moved(real x, real y)
+    signal moveStarted(real x, real y)
+    signal moving(real x, real y)
     signal expandForRoutingRequested
     signal routeStarted(var portId, real graphX, real graphY)
     signal routeMoved(real graphX, real graphY)
     signal routeFinished(real graphX, real graphY)
     signal routeTargetRequested(var portId)
+    signal volumeRequested(var control, real percent)
+    signal muteRequested(var control, bool muted)
 
     function mediaColor(media) {
         if (media === "video") return "#e6b765"
@@ -59,6 +63,8 @@ Rectangle {
     Accessible.name: card.title + ", " + card.subtitle + ", " + card.state
 
     Behavior on opacity { NumberAnimation { duration: 110 } }
+    onXChanged: if (moveHandler.active) moving(x, y)
+    onYChanged: if (moveHandler.active) moving(x, y)
 
     Binding { target: root; property: "x"; value: root.card.x; when: !moveHandler.active }
     Binding { target: root; property: "y"; value: root.card.y; when: !moveHandler.active }
@@ -119,13 +125,56 @@ Rectangle {
         }
     }
 
+    Rectangle {
+        id: inlineMixer
+        visible: root.card.inlineAudio && root.card.inlineAudio.targetKind !== undefined
+        x: 16; y: 91; width: parent.width - 28; height: 46
+        radius: 3; color: "#1c2227"; border.color: "#354049"
+        property var control: root.card.inlineAudio || ({})
+        function commit() { root.volumeRequested(control, inlineVolume.value) }
+        Row {
+            anchors.fill: parent; anchors.margins: 7; spacing: 7
+            GraphText {
+                width: 35; anchors.verticalCenter: parent.verticalCenter
+                text: inlineMixer.control.direction === "capture" ? "Input" : "Out 1–2"
+                color: "#9ba6af"; font.pixelSize: 9; elide: Text.ElideRight
+            }
+            Slider {
+                id: inlineVolume
+                objectName: "inlineVolume"
+                width: 105; anchors.verticalCenter: parent.verticalCenter
+                from: inlineMixer.control.minimum || 0
+                to: inlineMixer.control.maximum || 100
+                value: inlineMixer.control.volume || 0
+                enabled: Boolean(inlineMixer.control.writable) && Boolean(inlineMixer.control.hasVolume)
+                onMoved: inlineCommit.restart()
+                onPressedChanged: if (!pressed && inlineCommit.running) { inlineCommit.stop(); inlineMixer.commit() }
+                Accessible.name: root.card.title + " first two channel volume"
+            }
+            GraphText {
+                width: 30; anchors.verticalCenter: parent.verticalCenter
+                text: Math.round(inlineVolume.value) + "%"; color: "#cbd2d7"; font.pixelSize: 9
+            }
+            ToolButton {
+                width: 28; height: 28; anchors.verticalCenter: parent.verticalCenter
+                visible: Boolean(inlineMixer.control.hasMute)
+                enabled: Boolean(inlineMixer.control.writable)
+                checkable: true; checked: Boolean(inlineMixer.control.muted)
+                text: checked ? "M" : "○"
+                onClicked: root.muteRequested(inlineMixer.control, checked)
+                Accessible.name: (checked ? "Unmute " : "Mute ") + root.card.title
+            }
+        }
+        Timer { id: inlineCommit; interval: 100; onTriggered: inlineMixer.commit() }
+    }
+
     Repeater {
         id: inputRepeater
         model: root.card.expanded ? root.card.inputs : root.card.inputGroups
         delegate: Item {
             required property var modelData
             required property int index
-            x: 0; y: 100 + index * 28
+            x: 0; y: (root.card.portTop || 100) + index * 28
             width: root.width / 2 - 8; height: 20
             property bool routeCompatible: root.containsPort(root.routing.compatibleInputs, modelData.id)
             property bool routeTarget: Boolean(root.routing.active) && Number(root.routing.targetPortId) === Number(modelData.id)
@@ -165,7 +214,7 @@ Rectangle {
         delegate: Item {
             required property var modelData
             required property int index
-            x: root.width / 2 + 8; y: 100 + index * 28
+            x: root.width / 2 + 8; y: (root.card.portTop || 100) + index * 28
             width: root.width / 2 - 8; height: 20
             property bool exactPort: modelData.id !== undefined && modelData.id !== null
             activeFocusOnTab: true
@@ -210,7 +259,7 @@ Rectangle {
             }
             Keys.onReturnPressed: {
                 if (!exactPort) root.expandForRoutingRequested()
-                else root.routeStarted(modelData.id, root.x + root.width, root.y + 100 + index * 28 + 9)
+                else root.routeStarted(modelData.id, root.x + root.width, root.y + (root.card.portTop || 100) + index * 28 + 9)
             }
             Keys.onEscapePressed: root.routeFinished(-10000, -10000)
         }
@@ -221,8 +270,11 @@ Rectangle {
         id: moveHandler
         target: root
         acceptedButtons: Qt.LeftButton
-        grabPermissions: PointerHandler.CanTakeOverFromHandlersOfDifferentType | PointerHandler.ApprovesTakeOverByAnything
-        onActiveChanged: if (!active) root.moved(root.x, root.y)
+        grabPermissions: PointerHandler.CanTakeOverFromHandlersOfSameType | PointerHandler.ApprovesTakeOverByAnything
+        onActiveChanged: {
+            if (active) root.moveStarted(root.x, root.y)
+            else root.moved(root.x, root.y)
+        }
     }
     Keys.onReturnPressed: root.selectedRequested()
     Keys.onSpacePressed: root.selectedRequested()

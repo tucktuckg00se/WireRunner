@@ -31,6 +31,9 @@ public:
   void setNodeAudio(SetNodeAudioRequest request, CommandCallback callback) override {
     lastAudio = std::move(request); audioCommand_ = std::move(callback);
   }
+  void setDeviceRouteAudio(SetDeviceRouteAudioRequest request, CommandCallback callback) override {
+    lastRouteAudio = std::move(request); audioCommand_ = std::move(callback);
+  }
   void respond(bool accepted, std::string message = {}) {
     QVERIFY(command_);
     const auto id = lastCreate.commandId != 0 && lastCreate.commandId >= lastDestroy.commandId
@@ -43,9 +46,15 @@ public:
     auto callback = std::move(audioCommand_);
     callback({lastAudio.commandId, accepted, std::move(message)});
   }
+  void respondRouteAudio(bool accepted, std::string message = {}) {
+    QVERIFY(audioCommand_);
+    auto callback = std::move(audioCommand_);
+    callback({lastRouteAudio.commandId, accepted, std::move(message)});
+  }
   CreateLinkRequest lastCreate;
   DestroyLinkRequest lastDestroy;
   SetNodeAudioRequest lastAudio;
+  SetDeviceRouteAudioRequest lastRouteAudio;
 private:
   SnapshotCallback snapshot_;
   StatusCallback status_;
@@ -301,6 +310,53 @@ private slots:
     backend->respondAudio(false, "denied");
     QTRY_VERIFY(controller.noticeText().contains(QStringLiteral("denied")));
     QCOMPARE(controller.selected().value("audioControls").toList().at(1).toMap().value("muted").toBool(), false);
+  }
+
+  void controlsDeviceRoutesWithoutFlatteningChannels() {
+    QTemporaryDir directory;
+    auto source = std::make_unique<ControllableGraphSource>();
+    auto *backend = source.get();
+    GraphController controller(std::move(source), directory.filePath("layout.json"));
+    controller.start();
+    GraphSnapshot graph;
+    graph.revision = 1;
+    graph.remoteName = "pipewire-0";
+    NodeAudioControl routeAudio{.volume = 0.25F, .channelVolumes = {0.25F, 0.125F, 0.064F},
+      .channelMap = {3, 4, 11}, .softVolumes = {0.25F, 0.125F, 0.064F},
+      .minimumVolume = 0.0F, .maximumVolume = 1.0F, .muted = false,
+      .hasVolume = true, .hasMute = true, .writable = true};
+    graph.devices = {{50, "Studio interface", "usb-focusrite", "Audio/Device",
+      {{.index = 7, .deviceIndex = 0, .direction = PortDirection::Output,
+        .name = "analog-output", .description = "Playback", .audio = routeAudio}}}};
+    graph.nodes = {{.id = 5, .name = "Studio playback", .technicalName = "alsa_output.test",
+      .stableId = "playback", .mediaClass = "Audio/Sink", .state = "running", .media = MediaType::Audio,
+      .role = NodeRole::Destination, .clientId = std::nullopt, .deviceId = 50, .profileDeviceId = 0,
+      .audio = NodeAudioControl{.volume = 1.0F, .hasVolume = true, .writable = true}}};
+    graph.ports = {{51, 5, "playback_FL", "FL", PortDirection::Input, MediaType::Audio},
+      {52, 5, "playback_FR", "FR", PortDirection::Input, MediaType::Audio}};
+    backend->publish(graph);
+    controller.selectCard(QStringLiteral("device:usb-focusrite"));
+    const auto selected = controller.selected();
+    QCOMPARE(selected.value("audioControls").toList().size(), 1);
+    QCOMPARE(selected.value("portTop").toInt(), 148);
+    const auto control = selected.value("inlineAudio").toMap();
+    QCOMPARE(control.value("targetKind").toString(), QStringLiteral("route"));
+    QCOMPARE(control.value("channels").toList().size(), 3);
+
+    controller.setAudioVolume(control, 80.0);
+    QCOMPARE(backend->lastRouteAudio.deviceId, GlobalId{50});
+    QCOMPARE(backend->lastRouteAudio.routeIndex, 7);
+    QCOMPARE(backend->lastRouteAudio.routeDeviceId, 0);
+    QCOMPARE(backend->lastRouteAudio.channelVolumes.size(), std::size_t{3});
+    QVERIFY(std::abs(backend->lastRouteAudio.channelVolumes[0] - 0.512F) < 0.0001F);
+    QVERIFY(std::abs(backend->lastRouteAudio.channelVolumes[1] - 0.256F) < 0.0001F);
+    QVERIFY(std::abs(backend->lastRouteAudio.channelVolumes[2] - 0.064F) < 0.0001F);
+    backend->respondRouteAudio(true, "saved");
+
+    controller.setAudioChannelVolume(control, 2, 50.0);
+    QCOMPARE(backend->lastRouteAudio.channelVolumes[0], 0.25F);
+    QCOMPARE(backend->lastRouteAudio.channelVolumes[1], 0.125F);
+    QCOMPARE(backend->lastRouteAudio.channelVolumes[2], 0.125F);
   }
 
   void reportsPolicyRestoredRoutesWithoutFightingThem() {

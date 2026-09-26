@@ -62,6 +62,67 @@ QString primaryMedia(const GraphCard &card) {
   if (!card.inputs.empty()) return text(mediaTypeName(card.inputs.front().media));
   return QStringLiteral("unknown");
 }
+
+QString channelPositionName(std::uint32_t position) {
+  switch (position) {
+  case 2: return QStringLiteral("Mono");
+  case 3: return QStringLiteral("Front left");
+  case 4: return QStringLiteral("Front right");
+  case 5: return QStringLiteral("Front center");
+  case 6: return QStringLiteral("LFE");
+  case 7: return QStringLiteral("Side left");
+  case 8: return QStringLiteral("Side right");
+  case 12: return QStringLiteral("Rear left");
+  case 13: return QStringLiteral("Rear right");
+  default:
+    if (position >= 0x1000 && position < 0x1040) return QStringLiteral("Aux %1").arg(position - 0x1000 + 1);
+    return {};
+  }
+}
+
+QString channelName(const GraphCard &card, const NodeAudioControl &audio, qsizetype index) {
+  if (index < static_cast<qsizetype>(audio.channelMap.size())) {
+    const auto mapped = channelPositionName(audio.channelMap.at(static_cast<std::size_t>(index)));
+    if (!mapped.isEmpty()) return mapped;
+  }
+  const auto append = [&](const std::vector<GraphPort> &ports, QStringList &names) {
+    for (const auto &port : ports) {
+      if (port.media != MediaType::Audio) continue;
+      auto name = qtext(port.channel);
+      if (name.isEmpty()) name = qtext(port.name);
+      if (!name.isEmpty() && !name.contains(QLatin1Char(',')) && !names.contains(name)) names.push_back(name);
+    }
+  };
+  QStringList names;
+  append(card.inputs, names); append(card.outputs, names);
+  return index < names.size() ? names.at(index) : QStringLiteral("Channel %1").arg(index + 1);
+}
+
+QVariantMap audioMap(const GraphCard &card, const NodeAudioControl &audio, QString name,
+                     const std::vector<float> *overrideVolumes = nullptr,
+                     std::optional<bool> overrideMuted = std::nullopt, bool firstPair = false) {
+  const auto &volumes = overrideVolumes && !overrideVolumes->empty() ? *overrideVolumes : audio.channelVolumes;
+  const auto pairCount = firstPair ? std::min<std::size_t>(2, volumes.size()) : volumes.size();
+  const auto linear = volumes.empty() ? audio.volume
+    : *std::max_element(volumes.begin(), volumes.begin() + static_cast<std::ptrdiff_t>(pairCount));
+  QVariantList channels;
+  for (qsizetype index = 0; index < static_cast<qsizetype>(volumes.size()); ++index) {
+    channels.push_back(QVariantMap{{QStringLiteral("index"), index},
+      {QStringLiteral("name"), channelName(card, audio, index)},
+      {QStringLiteral("volume"), volumeToPercent(volumes.at(static_cast<std::size_t>(index)))},
+      {QStringLiteral("soft"), index < static_cast<qsizetype>(audio.softVolumes.size())},
+      {QStringLiteral("minimum"), volumeToPercent(audio.minimumVolume)},
+      {QStringLiteral("maximum"), volumeToPercent(std::max(audio.maximumVolume, linear))}});
+  }
+  return {{QStringLiteral("name"), std::move(name)},
+    {QStringLiteral("volume"), volumeToPercent(linear)},
+    {QStringLiteral("minimum"), volumeToPercent(audio.minimumVolume)},
+    {QStringLiteral("maximum"), volumeToPercent(std::max(audio.maximumVolume, linear))},
+    {QStringLiteral("muted"), overrideMuted.value_or(audio.muted)},
+    {QStringLiteral("hasVolume"), audio.hasVolume}, {QStringLiteral("hasMute"), audio.hasMute},
+    {QStringLiteral("writable"), audio.writable}, {QStringLiteral("boosted"), linear > 1.0F},
+    {QStringLiteral("channels"), channels}, {QStringLiteral("pairCount"), std::min<qsizetype>(2, volumes.size())}};
+}
 } // namespace
 
 GraphController::GraphController(std::unique_ptr<GraphSource> source, QString layoutPath, QObject *parent)
@@ -79,7 +140,11 @@ GraphController::GraphController(std::unique_ptr<GraphSource> source, QString la
       if (it->deadline <= now) { it = pendingAudio_.erase(it); expired = true; }
       else ++it;
     }
-    if (pendingAudio_.isEmpty()) audioTimer_.stop();
+    for (auto it = pendingRouteAudio_.begin(); it != pendingRouteAudio_.end();) {
+      if (it->deadline <= now) { it = pendingRouteAudio_.erase(it); expired = true; }
+      else ++it;
+    }
+    if (pendingAudio_.isEmpty() && pendingRouteAudio_.isEmpty()) audioTimer_.stop();
     if (expired) {
       setNotice(QStringLiteral("PipeWire did not confirm the audio change."));
       rebuildPresentation();
@@ -165,8 +230,9 @@ void GraphController::applyStatus(SourceStatus status) {
   if (!connected_) {
     cancelRoute();
     if (pending_) failPending(QStringLiteral("The PipeWire connection changed before the edit completed"));
-    if (!pendingAudio_.isEmpty()) {
+    if (!pendingAudio_.isEmpty() || !pendingRouteAudio_.isEmpty()) {
       pendingAudio_.clear();
+      pendingRouteAudio_.clear();
       audioTimer_.stop();
       setNotice(QStringLiteral("The PipeWire connection changed before the audio edit completed."));
       rebuildPresentation();
@@ -197,9 +263,50 @@ void GraphController::rebuildPresentation() {
     const auto outputGroups = portGroups(card, PortDirection::Output);
     const auto visibleRows = state.expanded ? std::max(inputs.size(), outputs.size())
                                             : std::max(inputGroups.size(), outputGroups.size());
-    const double height = std::max(126.0, cardTop + 18.0 + static_cast<double>(visibleRows) * portStep);
     QVariantList members;
     QVariantList audioControls;
+    QVariantMap inlineAudio;
+    const GraphDevice *cardDevice = nullptr;
+    for (const auto nodeId : card.nodeIds) {
+      const auto node = std::ranges::find(snapshot_->nodes, nodeId, &GraphNode::id);
+      if (node == snapshot_->nodes.end() || !node->deviceId) continue;
+      const auto device = std::ranges::find(snapshot_->devices, *node->deviceId, &GraphDevice::id);
+      if (device != snapshot_->devices.end()) { cardDevice = &*device; break; }
+    }
+    if (cardDevice) {
+      QSet<int> preferredDevices;
+      for (const auto nodeId : card.nodeIds) {
+        const auto node = std::ranges::find(snapshot_->nodes, nodeId, &GraphNode::id);
+        if (node != snapshot_->nodes.end() && node->profileDeviceId) preferredDevices.insert(*node->profileDeviceId);
+      }
+      for (const auto &route : cardDevice->routes) {
+        if (!preferredDevices.isEmpty() && route.deviceIndex >= 0 && !preferredDevices.contains(route.deviceIndex)) continue;
+        const auto routeKey = QStringLiteral("%1:%2").arg(cardDevice->id).arg(route.index);
+        const auto pending = pendingRouteAudio_.constFind(routeKey);
+        const auto pendingVolumes = pending == pendingRouteAudio_.cend() ? nullptr : &pending->channelVolumes;
+        const auto pendingMuted = pending == pendingRouteAudio_.cend() ? std::optional<bool>{} : pending->muted;
+        const auto routeLabel = route.description.empty() ? route.name : route.description;
+        auto control = audioMap(card, route.audio,
+          routeLabel.empty() ? (route.direction == PortDirection::Output ? QStringLiteral("Outputs") : QStringLiteral("Inputs"))
+                             : qtext(routeLabel),
+          pendingVolumes, pendingMuted, true);
+        QVariantList channelMap;
+        for (const auto position : route.audio.channelMap) channelMap.push_back(position);
+        control.insert(QStringLiteral("targetKind"), QStringLiteral("route"));
+        control.insert(QStringLiteral("deviceId"), cardDevice->id);
+        control.insert(QStringLiteral("routeIndex"), route.index);
+        control.insert(QStringLiteral("routeDeviceId"), route.deviceIndex);
+        control.insert(QStringLiteral("direction"), route.direction == PortDirection::Output ? QStringLiteral("playback") : QStringLiteral("capture"));
+        control.insert(QStringLiteral("channelMap"), channelMap);
+        control.insert(QStringLiteral("pending"), pending != pendingRouteAudio_.cend());
+        audioControls.push_back(control);
+        if (inlineAudio.isEmpty() || (route.direction == PortDirection::Output && inlineAudio.value(QStringLiteral("direction")) != QStringLiteral("playback")))
+          inlineAudio = control;
+      }
+    }
+    const bool authoritativeDeviceAudio = !audioControls.isEmpty();
+    const double portTop = inlineAudio.isEmpty() ? cardTop : 148.0;
+    const double height = std::max(portTop + 26.0, portTop + 18.0 + static_cast<double>(visibleRows) * portStep);
     QStringList technicalNames;
     QString stateLabel = QStringLiteral("idle");
     QStringList mediaTypes;
@@ -215,22 +322,21 @@ void GraphController::rebuildPresentation() {
         {QStringLiteral("technicalName"), qtext(node->technicalName)}, {QStringLiteral("stableId"), qtext(node->stableId)},
         {QStringLiteral("mediaClass"), qtext(node->mediaClass)}, {QStringLiteral("state"), qtext(node->state)},
         {QStringLiteral("media"), media}, {QStringLiteral("role"), text(nodeRoleName(node->role))}});
-      if (node->audio) {
+      if (node->audio && !authoritativeDeviceAudio) {
         const auto pendingAudio = pendingAudio_.constFind(node->id);
         const auto linearVolume = pendingAudio != pendingAudio_.cend() && pendingAudio->volume
           ? static_cast<double>(*pendingAudio->volume) : static_cast<double>(node->audio->volume);
         const auto muted = pendingAudio != pendingAudio_.cend() && pendingAudio->muted
           ? *pendingAudio->muted : node->audio->muted;
         const auto decibels = volumeToDecibels(linearVolume);
-        audioControls.push_back(QVariantMap{{QStringLiteral("nodeId"), node->id},
-          {QStringLiteral("name"), qtext(node->name)}, {QStringLiteral("volume"), volumeToPercent(linearVolume)},
-          {QStringLiteral("minimum"), volumeToPercent(node->audio->minimumVolume)},
-          {QStringLiteral("maximum"), volumeToPercent(node->audio->maximumVolume)},
-          {QStringLiteral("decibels"), std::isfinite(decibels) ? QVariant(decibels) : QVariant()},
-          {QStringLiteral("muted"), muted}, {QStringLiteral("hasVolume"), node->audio->hasVolume},
-          {QStringLiteral("hasMute"), node->audio->hasMute}, {QStringLiteral("writable"), node->audio->writable},
-          {QStringLiteral("pending"), pendingAudio != pendingAudio_.cend()},
-          {QStringLiteral("boosted"), linearVolume > 1.0F}});
+        auto control = audioMap(card, *node->audio, qtext(node->name));
+        control.insert(QStringLiteral("targetKind"), QStringLiteral("node"));
+        control.insert(QStringLiteral("nodeId"), node->id);
+        control.insert(QStringLiteral("volume"), volumeToPercent(linearVolume));
+        control.insert(QStringLiteral("decibels"), std::isfinite(decibels) ? QVariant(decibels) : QVariant());
+        control.insert(QStringLiteral("muted"), muted);
+        control.insert(QStringLiteral("pending"), pendingAudio != pendingAudio_.cend());
+        audioControls.push_back(control);
       }
     }
     for (const auto &link : snapshot_->links) {
@@ -246,6 +352,7 @@ void GraphController::rebuildPresentation() {
       {QStringLiteral("media"), primaryMedia(card)}, {QStringLiteral("mediaTypes"), mediaTypes},
       {QStringLiteral("state"), stateLabel}, {QStringLiteral("members"), members},
       {QStringLiteral("audioControls"), audioControls},
+      {QStringLiteral("inlineAudio"), inlineAudio}, {QStringLiteral("portTop"), portTop},
       {QStringLiteral("technicalNames"), technicalNames}, {QStringLiteral("inputs"), inputs},
       {QStringLiteral("outputs"), outputs}, {QStringLiteral("inputGroups"), inputGroups},
       {QStringLiteral("outputGroups"), outputGroups}, {QStringLiteral("nodeCount"), static_cast<int>(card.nodeIds.size())},
@@ -255,7 +362,7 @@ void GraphController::rebuildPresentation() {
       {QStringLiteral("focused"), focusCards_.isEmpty() || focusCards_.contains(key)}};
     cards.push_back(item);
     cardMaps.insert(key, item);
-    if (visible) cardRects.push_back(QVariantMap{{QStringLiteral("x"), state.position.x()},
+    if (visible) cardRects.push_back(QVariantMap{{QStringLiteral("key"), key}, {QStringLiteral("x"), state.position.x()},
       {QStringLiteral("y"), state.position.y()}, {QStringLiteral("width"), cardWidth},
       {QStringLiteral("height"), height}});
     maximumX = std::max(maximumX, state.position.x() + cardWidth + 80.0);
@@ -266,7 +373,7 @@ void GraphController::rebuildPresentation() {
         const auto port = ports.at(row).toMap();
         anchors.push_back(QVariantMap{{QStringLiteral("key"), port.value(QStringLiteral("key"))},
           {QStringLiteral("x"), state.position.x() + (direction == PortDirection::Input ? 0.0 : cardWidth)},
-          {QStringLiteral("y"), state.position.y() + cardTop + 9.0 + static_cast<double>(row) * portStep},
+          {QStringLiteral("y"), state.position.y() + portTop + 9.0 + static_cast<double>(row) * portStep},
           {QStringLiteral("cardKey"), key}, {QStringLiteral("direction"), port.value(QStringLiteral("direction"))},
           {QStringLiteral("media"), port.value(QStringLiteral("media"))}, {QStringLiteral("count"), 1},
           {QStringLiteral("portId"), port.value(QStringLiteral("id"))}});
@@ -277,7 +384,7 @@ void GraphController::rebuildPresentation() {
         const auto group = groups.at(row).toMap();
         anchors.push_back(QVariantMap{{QStringLiteral("key"), group.value(QStringLiteral("key"))},
           {QStringLiteral("x"), state.position.x() + (direction == PortDirection::Input ? 0.0 : cardWidth)},
-          {QStringLiteral("y"), state.position.y() + cardTop + 9.0 + static_cast<double>(row) * portStep},
+          {QStringLiteral("y"), state.position.y() + portTop + 9.0 + static_cast<double>(row) * portStep},
           {QStringLiteral("cardKey"), key},
           {QStringLiteral("direction"), direction == PortDirection::Input ? QStringLiteral("input") : QStringLiteral("output")},
           {QStringLiteral("media"), group.value(QStringLiteral("media"))},
@@ -673,6 +780,16 @@ void GraphController::applyAudioResult(GlobalId nodeId, CommandResult result) {
   rebuildPresentation();
 }
 
+void GraphController::applyRouteAudioResult(const QString &key, CommandResult result) {
+  const auto found = pendingRouteAudio_.find(key);
+  if (found == pendingRouteAudio_.end() || found->commandId != result.commandId) return;
+  if (result.accepted) { setNotice(qtext(result.message)); return; }
+  pendingRouteAudio_.erase(found);
+  if (pendingAudio_.isEmpty() && pendingRouteAudio_.isEmpty()) audioTimer_.stop();
+  setNotice(qtext(result.message));
+  rebuildPresentation();
+}
+
 void GraphController::resolvePending() {
   if (!snapshot_ || !pending_) return;
   if (pending_->creating) {
@@ -696,7 +813,7 @@ void GraphController::resolvePending() {
 }
 
 void GraphController::resolveAudioPending() {
-  if (!snapshot_ || pendingAudio_.isEmpty()) return;
+  if (!snapshot_) return;
   for (auto it = pendingAudio_.begin(); it != pendingAudio_.end();) {
     const auto node = std::ranges::find(snapshot_->nodes, it.key(), &GraphNode::id);
     bool confirmed = node == snapshot_->nodes.end() || !node->audio;
@@ -707,7 +824,23 @@ void GraphController::resolveAudioPending() {
       confirmed = std::abs(node->audio->volume - *it->volume) <= 0.002F && node->audio->muted == *it->muted;
     if (confirmed) it = pendingAudio_.erase(it); else ++it;
   }
-  if (pendingAudio_.isEmpty()) audioTimer_.stop();
+  for (auto it = pendingRouteAudio_.begin(); it != pendingRouteAudio_.end();) {
+    const auto device = std::ranges::find(snapshot_->devices, it->deviceId, &GraphDevice::id);
+    const DeviceRoute *route = nullptr;
+    if (device != snapshot_->devices.end()) {
+      const auto found = std::ranges::find(device->routes, it->routeIndex, &DeviceRoute::index);
+      if (found != device->routes.end()) route = &*found;
+    }
+    bool confirmed = !route;
+    if (route && !it->channelVolumes.empty()) {
+      confirmed = route->audio.channelVolumes.size() == it->channelVolumes.size();
+      for (std::size_t i = 0; confirmed && i < it->channelVolumes.size(); ++i)
+        confirmed = std::abs(route->audio.channelVolumes[i] - it->channelVolumes[i]) <= 0.002F;
+    }
+    if (route && it->muted) confirmed = confirmed || route->audio.muted == *it->muted;
+    if (confirmed) it = pendingRouteAudio_.erase(it); else ++it;
+  }
+  if (pendingAudio_.isEmpty() && pendingRouteAudio_.isEmpty()) audioTimer_.stop();
 }
 
 void GraphController::completePending(const GraphLink &observed) {
@@ -802,6 +935,106 @@ void GraphController::setNodeMuted(quint32 nodeId, bool muted) {
       applyAudioResult(nodeId, result);
     }, Qt::QueuedConnection);
   });
+}
+
+void GraphController::setAudioVolume(const QVariantMap &control, double percent) {
+  if (control.value(QStringLiteral("targetKind")) == QStringLiteral("node")) {
+    setNodeVolume(control.value(QStringLiteral("nodeId")).toUInt(), percent);
+    return;
+  }
+  if (!snapshot_ || control.value(QStringLiteral("targetKind")) != QStringLiteral("route")) return;
+  const auto deviceId = control.value(QStringLiteral("deviceId")).toUInt();
+  const auto routeIndex = control.value(QStringLiteral("routeIndex")).toInt();
+  const auto device = std::ranges::find(snapshot_->devices, deviceId, &GraphDevice::id);
+  if (device == snapshot_->devices.end()) return;
+  const auto route = std::ranges::find(device->routes, routeIndex, &DeviceRoute::index);
+  if (route == device->routes.end() || !route->audio.writable || route->audio.channelVolumes.empty()) return;
+  auto volumes = route->audio.channelVolumes;
+  const auto pairCount = std::min<std::size_t>(2, volumes.size());
+  const auto current = *std::max_element(volumes.begin(), volumes.begin() + static_cast<std::ptrdiff_t>(pairCount));
+  const auto requested = static_cast<float>(percentToVolume(std::clamp(percent,
+    volumeToPercent(route->audio.minimumVolume), volumeToPercent(route->audio.maximumVolume))));
+  for (std::size_t index = 0; index < pairCount; ++index)
+    volumes[index] = current > 0.000001F ? volumes[index] * requested / current : requested;
+  const auto key = QStringLiteral("%1:%2").arg(deviceId).arg(routeIndex);
+  SetDeviceRouteAudioRequest request{.commandId = nextCommandId_++, .snapshotRevision = snapshot_->revision,
+    .deviceId = deviceId, .routeIndex = routeIndex, .routeDeviceId = route->deviceIndex,
+    .channelVolumes = volumes, .channelMap = route->audio.channelMap, .muted = std::nullopt};
+  pendingRouteAudio_.insert(key, PendingRouteAudio{request.commandId, deviceId, routeIndex, volumes,
+    std::nullopt, QDateTime::currentMSecsSinceEpoch() + 4000});
+  if (!audioTimer_.isActive()) audioTimer_.start();
+  source_->setDeviceRouteAudio(std::move(request), [this, key](CommandResult result) {
+    QMetaObject::invokeMethod(this, [this, key, result = std::move(result)] { applyRouteAudioResult(key, result); },
+      Qt::QueuedConnection);
+  });
+  rebuildPresentation();
+}
+
+void GraphController::setAudioChannelVolume(const QVariantMap &control, int channel, double percent) {
+  if (!snapshot_ || channel < 0) return;
+  if (control.value(QStringLiteral("targetKind")) == QStringLiteral("node")) {
+    const auto nodeId = control.value(QStringLiteral("nodeId")).toUInt();
+    const auto node = std::ranges::find(snapshot_->nodes, nodeId, &GraphNode::id);
+    if (node == snapshot_->nodes.end() || !node->audio || !node->audio->writable ||
+        channel >= static_cast<int>(node->audio->channelVolumes.size())) return;
+    auto volumes = node->audio->channelVolumes;
+    volumes[static_cast<std::size_t>(channel)] = static_cast<float>(percentToVolume(percent));
+    SetNodeAudioRequest request{.commandId = nextCommandId_++, .snapshotRevision = snapshot_->revision,
+      .nodeId = nodeId, .volume = std::nullopt, .channelVolumes = volumes, .muted = std::nullopt};
+    pendingAudio_.insert(nodeId, PendingAudio{request.commandId,
+      *std::ranges::max_element(volumes), std::nullopt, QDateTime::currentMSecsSinceEpoch() + 4000});
+    if (!audioTimer_.isActive()) audioTimer_.start();
+    source_->setNodeAudio(std::move(request), [this, nodeId](CommandResult result) {
+      QMetaObject::invokeMethod(this, [this, nodeId, result = std::move(result)] { applyAudioResult(nodeId, result); },
+        Qt::QueuedConnection);
+    });
+    return;
+  }
+  const auto deviceId = control.value(QStringLiteral("deviceId")).toUInt();
+  const auto routeIndex = control.value(QStringLiteral("routeIndex")).toInt();
+  const auto device = std::ranges::find(snapshot_->devices, deviceId, &GraphDevice::id);
+  if (device == snapshot_->devices.end()) return;
+  const auto route = std::ranges::find(device->routes, routeIndex, &DeviceRoute::index);
+  if (route == device->routes.end() || !route->audio.writable ||
+      channel >= static_cast<int>(route->audio.channelVolumes.size())) return;
+  auto volumes = route->audio.channelVolumes;
+  volumes[static_cast<std::size_t>(channel)] = static_cast<float>(percentToVolume(percent));
+  const auto key = QStringLiteral("%1:%2").arg(deviceId).arg(routeIndex);
+  SetDeviceRouteAudioRequest request{.commandId = nextCommandId_++, .snapshotRevision = snapshot_->revision,
+    .deviceId = deviceId, .routeIndex = routeIndex, .routeDeviceId = route->deviceIndex,
+    .channelVolumes = volumes, .channelMap = route->audio.channelMap, .muted = std::nullopt};
+  pendingRouteAudio_.insert(key, PendingRouteAudio{request.commandId, deviceId, routeIndex, volumes,
+    std::nullopt, QDateTime::currentMSecsSinceEpoch() + 4000});
+  if (!audioTimer_.isActive()) audioTimer_.start();
+  source_->setDeviceRouteAudio(std::move(request), [this, key](CommandResult result) {
+    QMetaObject::invokeMethod(this, [this, key, result = std::move(result)] { applyRouteAudioResult(key, result); }, Qt::QueuedConnection);
+  });
+  rebuildPresentation();
+}
+
+void GraphController::setAudioMuted(const QVariantMap &control, bool muted) {
+  if (control.value(QStringLiteral("targetKind")) == QStringLiteral("node")) {
+    setNodeMuted(control.value(QStringLiteral("nodeId")).toUInt(), muted);
+    return;
+  }
+  if (!snapshot_) return;
+  const auto deviceId = control.value(QStringLiteral("deviceId")).toUInt();
+  const auto routeIndex = control.value(QStringLiteral("routeIndex")).toInt();
+  const auto device = std::ranges::find(snapshot_->devices, deviceId, &GraphDevice::id);
+  if (device == snapshot_->devices.end()) return;
+  const auto route = std::ranges::find(device->routes, routeIndex, &DeviceRoute::index);
+  if (route == device->routes.end() || !route->audio.writable || !route->audio.hasMute) return;
+  const auto key = QStringLiteral("%1:%2").arg(deviceId).arg(routeIndex);
+  SetDeviceRouteAudioRequest request{.commandId = nextCommandId_++, .snapshotRevision = snapshot_->revision,
+    .deviceId = deviceId, .routeIndex = routeIndex, .routeDeviceId = route->deviceIndex,
+    .channelVolumes = {}, .channelMap = route->audio.channelMap, .muted = muted};
+  pendingRouteAudio_.insert(key, PendingRouteAudio{request.commandId, deviceId, routeIndex, {}, muted,
+    QDateTime::currentMSecsSinceEpoch() + 4000});
+  if (!audioTimer_.isActive()) audioTimer_.start();
+  source_->setDeviceRouteAudio(std::move(request), [this, key](CommandResult result) {
+    QMetaObject::invokeMethod(this, [this, key, result = std::move(result)] { applyRouteAudioResult(key, result); }, Qt::QueuedConnection);
+  });
+  rebuildPresentation();
 }
 
 void GraphController::undo() {

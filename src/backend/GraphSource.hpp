@@ -43,6 +43,17 @@ struct SetNodeAudioRequest {
   std::optional<bool> muted;
 };
 
+struct SetDeviceRouteAudioRequest {
+  CommandId commandId{};
+  std::uint64_t snapshotRevision{};
+  GlobalId deviceId{};
+  int routeIndex{-1};
+  int routeDeviceId{-1};
+  std::vector<float> channelVolumes;
+  std::vector<std::uint32_t> channelMap;
+  std::optional<bool> muted;
+};
+
 struct CommandResult {
   CommandId commandId{};
   bool accepted{};
@@ -60,6 +71,7 @@ public:
   virtual void createLink(CreateLinkRequest request, CommandCallback callback) = 0;
   virtual void destroyLink(DestroyLinkRequest request, CommandCallback callback) = 0;
   virtual void setNodeAudio(SetNodeAudioRequest request, CommandCallback callback) = 0;
+  virtual void setDeviceRouteAudio(SetDeviceRouteAudioRequest request, CommandCallback callback) = 0;
 };
 
 } // namespace wirerunner

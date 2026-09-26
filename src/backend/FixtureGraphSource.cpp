@@ -28,7 +28,19 @@ std::optional<NodeAudioControl> audioControl(const QJsonObject &o) {
   result.writable = audio.value("writable").toBool(false);
   for (const auto value : audio.value("channelVolumes").toArray())
     result.channelVolumes.push_back(static_cast<float>(value.toDouble()));
+  for (const auto value : audio.value("channelMap").toArray())
+    result.channelMap.push_back(static_cast<std::uint32_t>(value.toInteger()));
+  for (const auto value : audio.value("softVolumes").toArray())
+    result.softVolumes.push_back(static_cast<float>(value.toDouble()));
   return result;
+}
+
+DeviceRoute deviceRoute(const QJsonObject &o) {
+  return {.index = o.value("index").toInt(-1), .deviceIndex = o.value("deviceIndex").toInt(-1),
+    .direction = o.value("direction").toString() == QStringLiteral("input")
+      ? PortDirection::Input : PortDirection::Output,
+    .name = text(o, "name"), .description = text(o, "description"),
+    .audio = audioControl(QJsonObject{{QStringLiteral("audio"), o.value("audio")}}).value_or(NodeAudioControl{})};
 }
 }
 
@@ -54,7 +66,10 @@ GraphSnapshot FixtureGraphSource::load(const QString &path) {
   }
   for (const auto value : root.value("devices").toArray()) {
     const auto o = value.toObject();
-    out.devices.push_back({id(o,"id"), text(o,"name"), text(o,"stableId"), text(o,"mediaClass")});
+    GraphDevice device{.id = id(o,"id"), .name = text(o,"name"), .stableId = text(o,"stableId"),
+      .mediaClass = text(o,"mediaClass"), .routes = {}};
+    for (const auto route : o.value("routes").toArray()) device.routes.push_back(deviceRoute(route.toObject()));
+    out.devices.push_back(std::move(device));
   }
   for (const auto value : root.value("nodes").toArray()) {
     const auto o = value.toObject();
@@ -62,7 +77,9 @@ GraphSnapshot FixtureGraphSource::load(const QString &path) {
       .technicalName = text(o,"technicalName"), .stableId = text(o,"stableId"),
       .mediaClass = text(o,"mediaClass"), .state = text(o,"state"), .media = media(o),
       .role = NodeRole::Processor, .clientId = optionalId(o,"clientId"),
-      .deviceId = optionalId(o,"deviceId"), .audio = audioControl(o)});
+      .deviceId = optionalId(o,"deviceId"),
+      .profileDeviceId = o.contains("profileDeviceId") ? std::optional{o.value("profileDeviceId").toInt()} : std::nullopt,
+      .audio = audioControl(o)});
   }
   for (const auto value : root.value("ports").toArray()) {
     const auto o = value.toObject();
@@ -97,6 +114,9 @@ void FixtureGraphSource::destroyLink(DestroyLinkRequest request, CommandCallback
 }
 
 void FixtureGraphSource::setNodeAudio(SetNodeAudioRequest request, CommandCallback callback) {
+  callback({request.commandId, false, "The demonstration graph is read-only"});
+}
+void FixtureGraphSource::setDeviceRouteAudio(SetDeviceRouteAudioRequest request, CommandCallback callback) {
   callback({request.commandId, false, "The demonstration graph is read-only"});
 }
 } // namespace wirerunner
