@@ -11,6 +11,8 @@ Rectangle {
     signal clearFocusRequested
     signal toggleRequested(string key)
     signal disconnectRequested
+    signal volumeRequested(int nodeId, real percent)
+    signal muteRequested(int nodeId, bool muted)
 
     color: "#1d2328"
     border.color: "#3c4650"
@@ -72,6 +74,89 @@ Rectangle {
                     Text { text: (root.selection.inputCount || 0) + " in, " + (root.selection.outputCount || 0) + " out"; color: "#d6dce0"; Layout.alignment: Qt.AlignRight }
                     Text { text: "Connections"; color: "#83909a"; font.pixelSize: 10 }
                     Text { text: root.selection.connectionCount || 0; color: "#d6dce0"; Layout.alignment: Qt.AlignRight }
+                }
+                ColumnLayout {
+                    visible: (root.selection.audioControls || []).length > 0
+                    Layout.fillWidth: true
+                    spacing: 10
+                    Text { text: "Audio"; color: "#83909a"; font.pixelSize: 10; font.weight: Font.DemiBold }
+                    Repeater {
+                        model: root.selection.audioControls || []
+                        delegate: Rectangle {
+                            id: audioControl
+                            objectName: "audioControl-" + modelData.nodeId
+                            required property var modelData
+                            Layout.fillWidth: true
+                            Layout.preferredHeight: modelData.writable ? 112 : 132
+                            color: "#252c32"
+                            border.color: modelData.pending ? "#7da7e8" : "#354049"
+                            radius: 3
+
+                            function commitVolume() {
+                                if (!modelData.writable || !modelData.hasVolume) return
+                                root.volumeRequested(modelData.nodeId, volumeSlider.value)
+                            }
+                            function decibelLabel(percent) {
+                                if (percent <= 0) return "−∞ dB"
+                                return (60 * Math.log(percent / 100) / Math.LN10).toFixed(1) + " dB"
+                            }
+
+                            ColumnLayout {
+                                anchors.fill: parent
+                                anchors.margins: 10
+                                spacing: 5
+                                RowLayout {
+                                    Layout.fillWidth: true
+                                    Text { Layout.fillWidth: true; text: audioControl.modelData.name; color: "#e1e5e8"; font.pixelSize: 11; elide: Text.ElideRight }
+                                    Text { visible: volumeSlider.value > 100.05; text: "Boosted"; color: "#e6b765"; font.pixelSize: 9 }
+                                    Button {
+                                        objectName: "muteButton-" + audioControl.modelData.nodeId
+                                        visible: audioControl.modelData.hasMute
+                                        enabled: audioControl.modelData.writable
+                                        checkable: true
+                                        checked: audioControl.modelData.muted
+                                        text: checked ? "Muted" : "Mute"
+                                        onClicked: root.muteRequested(audioControl.modelData.nodeId, checked)
+                                        Accessible.name: (checked ? "Unmute " : "Mute ") + audioControl.modelData.name
+                                    }
+                                }
+                                RowLayout {
+                                    Layout.fillWidth: true
+                                    Slider {
+                                        id: volumeSlider
+                                        objectName: "volumeSlider-" + audioControl.modelData.nodeId
+                                        Layout.fillWidth: true
+                                        from: audioControl.modelData.minimum
+                                        to: audioControl.modelData.maximum
+                                        value: audioControl.modelData.volume
+                                        enabled: audioControl.modelData.writable && audioControl.modelData.hasVolume
+                                        stepSize: 1
+                                        onMoved: volumeCommit.restart()
+                                        onPressedChanged: if (!pressed && volumeCommit.running) {
+                                            volumeCommit.stop()
+                                            audioControl.commitVolume()
+                                        }
+                                        Accessible.name: audioControl.modelData.name + " volume"
+                                        Accessible.description: Math.round(value) + " percent, " + audioControl.decibelLabel(value)
+                                    }
+                                    Text {
+                                        Layout.preferredWidth: 76
+                                        horizontalAlignment: Text.AlignRight
+                                        text: Math.round(volumeSlider.value) + "%  " + audioControl.decibelLabel(volumeSlider.value)
+                                        color: volumeSlider.value > 100.05 ? "#e6b765" : "#cbd2d7"
+                                        font.pixelSize: 10
+                                    }
+                                }
+                                Text {
+                                    visible: !audioControl.modelData.writable
+                                    Layout.fillWidth: true
+                                    text: "PipeWire exposes this control as read-only."
+                                    color: "#e6b765"; font.pixelSize: 9; wrapMode: Text.Wrap
+                                }
+                            }
+                            Timer { id: volumeCommit; interval: 120; onTriggered: audioControl.commitVolume() }
+                        }
+                    }
                 }
                 ToolButton { id: nodeDisclosure; text: checked ? "Hide member nodes" : "Show member nodes"; checkable: true }
                 ColumnLayout {

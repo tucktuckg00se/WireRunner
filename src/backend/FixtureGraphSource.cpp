@@ -15,6 +15,21 @@ MediaType media(const QJsonObject &o) { return classifyMedia(text(o, "media")); 
 std::optional<GlobalId> optionalId(const QJsonObject &o, const char *key) {
   return o.contains(key) ? std::optional{id(o, key)} : std::nullopt;
 }
+std::optional<NodeAudioControl> audioControl(const QJsonObject &o) {
+  if (!o.value("audio").isObject()) return std::nullopt;
+  const auto audio = o.value("audio").toObject();
+  NodeAudioControl result;
+  result.volume = static_cast<float>(audio.value("volume").toDouble(1.0));
+  result.minimumVolume = static_cast<float>(audio.value("minimumVolume").toDouble(0.0));
+  result.maximumVolume = static_cast<float>(audio.value("maximumVolume").toDouble(1.0));
+  result.muted = audio.value("muted").toBool();
+  result.hasVolume = audio.value("hasVolume").toBool(true);
+  result.hasMute = audio.value("hasMute").toBool(true);
+  result.writable = audio.value("writable").toBool(false);
+  for (const auto value : audio.value("channelVolumes").toArray())
+    result.channelVolumes.push_back(static_cast<float>(value.toDouble()));
+  return result;
+}
 }
 
 FixtureGraphSource::FixtureGraphSource(QString path) : path_(std::move(path)) {}
@@ -47,7 +62,7 @@ GraphSnapshot FixtureGraphSource::load(const QString &path) {
       .technicalName = text(o,"technicalName"), .stableId = text(o,"stableId"),
       .mediaClass = text(o,"mediaClass"), .state = text(o,"state"), .media = media(o),
       .role = NodeRole::Processor, .clientId = optionalId(o,"clientId"),
-      .deviceId = optionalId(o,"deviceId")});
+      .deviceId = optionalId(o,"deviceId"), .audio = audioControl(o)});
   }
   for (const auto value : root.value("ports").toArray()) {
     const auto o = value.toObject();
@@ -78,6 +93,10 @@ void FixtureGraphSource::createLink(CreateLinkRequest request, CommandCallback c
 }
 
 void FixtureGraphSource::destroyLink(DestroyLinkRequest request, CommandCallback callback) {
+  callback({request.commandId, false, "The demonstration graph is read-only"});
+}
+
+void FixtureGraphSource::setNodeAudio(SetNodeAudioRequest request, CommandCallback callback) {
   callback({request.commandId, false, "The demonstration graph is read-only"});
 }
 } // namespace wirerunner

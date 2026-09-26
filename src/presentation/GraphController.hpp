@@ -6,6 +6,7 @@
 #include "presentation/StableListModel.hpp"
 
 #include <QObject>
+#include <QHash>
 #include <QSet>
 #include <QTimer>
 #include <QVariantList>
@@ -85,6 +86,8 @@ public:
   Q_INVOKABLE void confirmFeedback();
   Q_INVOKABLE void cancelFeedback();
   Q_INVOKABLE void disconnectSelected();
+  Q_INVOKABLE void setNodeVolume(quint32 nodeId, double percent);
+  Q_INVOKABLE void setNodeMuted(quint32 nodeId, bool muted);
   Q_INVOKABLE void undo();
   Q_INVOKABLE void redo();
 
@@ -111,9 +114,16 @@ private:
     GraphLink link;
     OperationIntent intent{OperationIntent::Normal};
   };
+  struct PendingAudio {
+    CommandId commandId{};
+    std::optional<float> volume;
+    std::optional<bool> muted;
+    qint64 deadline{};
+  };
   void applySnapshot(std::shared_ptr<const GraphSnapshot> snapshot);
   void applyStatus(SourceStatus status);
   void applyCommandResult(CommandResult result);
+  void applyAudioResult(GlobalId nodeId, CommandResult result);
   void rebuildPresentation();
   void rebuildRouting();
   void updateSelection();
@@ -122,6 +132,7 @@ private:
     OperationIntent intent = OperationIntent::Normal);
   void submitDestroy(const GraphLink &link, OperationIntent intent = OperationIntent::Normal);
   void resolvePending();
+  void resolveAudioPending();
   void completePending(const GraphLink &observed);
   void failPending(const QString &message);
   void setNotice(QString message);
@@ -156,6 +167,8 @@ private:
   qsizetype historyCursor_{};
   CommandId nextCommandId_{1};
   QTimer commandTimer_;
+  QTimer audioTimer_;
+  QHash<GlobalId, PendingAudio> pendingAudio_;
   double canvasWidth_{1000.0};
   double canvasHeight_{650.0};
 };

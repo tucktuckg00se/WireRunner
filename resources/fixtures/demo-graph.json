@@ -15,14 +15,14 @@
     {"id": 1003, "name": "MIDI keyboard", "stableId": "usb-midi-keyboard", "mediaClass": "MIDI device"}
   ],
   "nodes": [
-    {"id": 10, "name": "Firefox audio", "technicalName": "Firefox", "stableId": "stream:firefox-audio", "clientId": 1, "mediaClass": "Stream/Output/Audio", "media": "audio", "state": "running"},
-    {"id": 11, "name": "Spotify audio", "technicalName": "Spotify", "stableId": "stream:spotify-audio", "clientId": 2, "mediaClass": "Stream/Output/Audio", "media": "audio", "state": "running"},
-    {"id": 20, "name": "Stream Mix", "technicalName": "stream_mix", "stableId": "virtual:stream-mix", "mediaClass": "Audio/Source/Virtual", "media": "audio", "state": "running"},
-    {"id": 30, "name": "Headphones playback", "technicalName": "alsa_output.pci", "stableId": "node:headphones", "deviceId": 1000, "mediaClass": "Audio/Sink", "media": "audio", "state": "idle"},
-    {"id": 31, "name": "Scarlett playback", "technicalName": "alsa_output.usb-focusrite", "stableId": "node:scarlett", "deviceId": 1001, "mediaClass": "Audio/Sink", "media": "audio", "state": "running"},
+    {"id": 10, "name": "Firefox audio", "technicalName": "Firefox", "stableId": "stream:firefox-audio", "clientId": 1, "mediaClass": "Stream/Output/Audio", "media": "audio", "state": "running", "audio": {"volume": 0.729, "channelVolumes": [0.729, 0.729], "maximumVolume": 1.0, "muted": false}},
+    {"id": 11, "name": "Spotify audio", "technicalName": "Spotify", "stableId": "stream:spotify-audio", "clientId": 2, "mediaClass": "Stream/Output/Audio", "media": "audio", "state": "running", "audio": {"volume": 0.422, "channelVolumes": [0.422, 0.422], "maximumVolume": 1.0, "muted": false}},
+    {"id": 20, "name": "Stream Mix", "technicalName": "stream_mix", "stableId": "virtual:stream-mix", "mediaClass": "Audio/Source/Virtual", "media": "audio", "state": "running", "audio": {"volume": 1.0, "channelVolumes": [1.0, 1.0], "maximumVolume": 1.5, "muted": false}},
+    {"id": 30, "name": "Headphones playback", "technicalName": "alsa_output.pci", "stableId": "node:headphones", "deviceId": 1000, "mediaClass": "Audio/Sink", "media": "audio", "state": "idle", "audio": {"volume": 0.512, "channelVolumes": [0.512, 0.512], "maximumVolume": 1.0, "muted": false}},
+    {"id": 31, "name": "Scarlett playback", "technicalName": "alsa_output.usb-focusrite", "stableId": "node:scarlett", "deviceId": 1001, "mediaClass": "Audio/Sink", "media": "audio", "state": "running", "audio": {"volume": 1.0, "channelVolumes": [1.0, 1.0], "maximumVolume": 1.0, "muted": false}},
     {"id": 40, "name": "Camera capture", "technicalName": "v4l2_input.usb-camera", "stableId": "node:usb-camera", "deviceId": 1002, "mediaClass": "Video/Source", "media": "video", "state": "running"},
     {"id": 41, "name": "OBS video input", "technicalName": "obs-video-input", "stableId": "stream:obs-video", "clientId": 4, "mediaClass": "Stream/Input/Video", "media": "video", "state": "running"},
-    {"id": 42, "name": "OBS audio input", "technicalName": "obs-audio-input", "stableId": "stream:obs-audio", "clientId": 4, "mediaClass": "Stream/Input/Audio", "media": "audio", "state": "running"},
+    {"id": 42, "name": "OBS audio input", "technicalName": "obs-audio-input", "stableId": "stream:obs-audio", "clientId": 4, "mediaClass": "Stream/Input/Audio", "media": "audio", "state": "running", "audio": {"volume": 1.0, "channelVolumes": [1.0, 1.0], "maximumVolume": 1.0, "muted": false}},
     {"id": 50, "name": "Keyboard events", "technicalName": "alsa_midi.keyboard", "stableId": "node:midi-keyboard", "deviceId": 1003, "mediaClass": "Midi/Source", "media": "midi", "state": "idle"},
     {"id": 51, "name": "Bitwig MIDI input", "technicalName": "bitwig-midi-in", "stableId": "stream:bitwig-midi", "clientId": 5, "mediaClass": "Stream/Input/Midi", "media": "midi", "state": "idle"}
   ],

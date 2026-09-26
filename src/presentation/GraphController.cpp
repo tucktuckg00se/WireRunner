@@ -7,6 +7,7 @@
 #include <QMetaObject>
 #include <QThread>
 #include <algorithm>
+#include <cmath>
 #include <deque>
 #include <map>
 #include <unordered_map>
@@ -70,6 +71,20 @@ GraphController::GraphController(std::unique_ptr<GraphSource> source, QString la
   connect(&commandTimer_, &QTimer::timeout, this, [this] {
     if (pending_) failPending(QStringLiteral("PipeWire did not confirm the graph change"));
   });
+  audioTimer_.setInterval(200);
+  connect(&audioTimer_, &QTimer::timeout, this, [this] {
+    const auto now = QDateTime::currentMSecsSinceEpoch();
+    bool expired = false;
+    for (auto it = pendingAudio_.begin(); it != pendingAudio_.end();) {
+      if (it->deadline <= now) { it = pendingAudio_.erase(it); expired = true; }
+      else ++it;
+    }
+    if (pendingAudio_.isEmpty()) audioTimer_.stop();
+    if (expired) {
+      setNotice(QStringLiteral("PipeWire did not confirm the audio change."));
+      rebuildPresentation();
+    }
+  });
 }
 
 GraphController::~GraphController() { source_->stop(); }
@@ -94,6 +109,7 @@ void GraphController::applySnapshot(std::shared_ptr<const GraphSnapshot> snapsho
   if (!remoteName_.isEmpty() && remoteName_ != nextRemote) {
     cardStates_.clear(); focusCards_.clear(); clearSelection(); cancelRoute();
     pending_.reset(); history_.clear(); historyCursor_ = 0;
+    pendingAudio_.clear(); audioTimer_.stop();
     emit historyChanged(); emit commandPendingChanged();
   }
   remoteName_ = nextRemote;
@@ -123,6 +139,7 @@ void GraphController::applySnapshot(std::shared_ptr<const GraphSnapshot> snapsho
   }
   remoteSummary_ = qtext(snapshot_->remoteName + "  /  " + snapshot_->remoteVersion);
   resolvePending();
+  resolveAudioPending();
 
   if (!previousRemote.isEmpty() && previousRemote == nextRemote && !history_.isEmpty() &&
       historyCursor_ == history_.size()) {
@@ -148,6 +165,12 @@ void GraphController::applyStatus(SourceStatus status) {
   if (!connected_) {
     cancelRoute();
     if (pending_) failPending(QStringLiteral("The PipeWire connection changed before the edit completed"));
+    if (!pendingAudio_.isEmpty()) {
+      pendingAudio_.clear();
+      audioTimer_.stop();
+      setNotice(QStringLiteral("The PipeWire connection changed before the audio edit completed."));
+      rebuildPresentation();
+    }
   }
   emit statusChanged();
 }
@@ -176,6 +199,7 @@ void GraphController::rebuildPresentation() {
                                             : std::max(inputGroups.size(), outputGroups.size());
     const double height = std::max(126.0, cardTop + 18.0 + static_cast<double>(visibleRows) * portStep);
     QVariantList members;
+    QVariantList audioControls;
     QStringList technicalNames;
     QString stateLabel = QStringLiteral("idle");
     QStringList mediaTypes;
@@ -191,6 +215,23 @@ void GraphController::rebuildPresentation() {
         {QStringLiteral("technicalName"), qtext(node->technicalName)}, {QStringLiteral("stableId"), qtext(node->stableId)},
         {QStringLiteral("mediaClass"), qtext(node->mediaClass)}, {QStringLiteral("state"), qtext(node->state)},
         {QStringLiteral("media"), media}, {QStringLiteral("role"), text(nodeRoleName(node->role))}});
+      if (node->audio) {
+        const auto pendingAudio = pendingAudio_.constFind(node->id);
+        const auto linearVolume = pendingAudio != pendingAudio_.cend() && pendingAudio->volume
+          ? static_cast<double>(*pendingAudio->volume) : static_cast<double>(node->audio->volume);
+        const auto muted = pendingAudio != pendingAudio_.cend() && pendingAudio->muted
+          ? *pendingAudio->muted : node->audio->muted;
+        const auto decibels = volumeToDecibels(linearVolume);
+        audioControls.push_back(QVariantMap{{QStringLiteral("nodeId"), node->id},
+          {QStringLiteral("name"), qtext(node->name)}, {QStringLiteral("volume"), volumeToPercent(linearVolume)},
+          {QStringLiteral("minimum"), volumeToPercent(node->audio->minimumVolume)},
+          {QStringLiteral("maximum"), volumeToPercent(node->audio->maximumVolume)},
+          {QStringLiteral("decibels"), std::isfinite(decibels) ? QVariant(decibels) : QVariant()},
+          {QStringLiteral("muted"), muted}, {QStringLiteral("hasVolume"), node->audio->hasVolume},
+          {QStringLiteral("hasMute"), node->audio->hasMute}, {QStringLiteral("writable"), node->audio->writable},
+          {QStringLiteral("pending"), pendingAudio != pendingAudio_.cend()},
+          {QStringLiteral("boosted"), linearVolume > 1.0F}});
+      }
     }
     for (const auto &link : snapshot_->links) {
       if (std::ranges::find(card.nodeIds, link.outputNodeId) != card.nodeIds.end() ||
@@ -204,6 +245,7 @@ void GraphController::rebuildPresentation() {
       {QStringLiteral("height"), height}, {QStringLiteral("expanded"), state.expanded},
       {QStringLiteral("media"), primaryMedia(card)}, {QStringLiteral("mediaTypes"), mediaTypes},
       {QStringLiteral("state"), stateLabel}, {QStringLiteral("members"), members},
+      {QStringLiteral("audioControls"), audioControls},
       {QStringLiteral("technicalNames"), technicalNames}, {QStringLiteral("inputs"), inputs},
       {QStringLiteral("outputs"), outputs}, {QStringLiteral("inputGroups"), inputGroups},
       {QStringLiteral("outputGroups"), outputGroups}, {QStringLiteral("nodeCount"), static_cast<int>(card.nodeIds.size())},
@@ -618,6 +660,19 @@ void GraphController::applyCommandResult(CommandResult result) {
   setNotice(qtext(result.message));
 }
 
+void GraphController::applyAudioResult(GlobalId nodeId, CommandResult result) {
+  const auto found = pendingAudio_.find(nodeId);
+  if (found == pendingAudio_.end() || found->commandId != result.commandId) return;
+  if (result.accepted) {
+    setNotice(qtext(result.message));
+    return;
+  }
+  pendingAudio_.erase(found);
+  if (pendingAudio_.isEmpty()) audioTimer_.stop();
+  setNotice(qtext(result.message));
+  rebuildPresentation();
+}
+
 void GraphController::resolvePending() {
   if (!snapshot_ || !pending_) return;
   if (pending_->creating) {
@@ -638,6 +693,21 @@ void GraphController::resolvePending() {
     return;
   }
   completePending(pending_->link);
+}
+
+void GraphController::resolveAudioPending() {
+  if (!snapshot_ || pendingAudio_.isEmpty()) return;
+  for (auto it = pendingAudio_.begin(); it != pendingAudio_.end();) {
+    const auto node = std::ranges::find(snapshot_->nodes, it.key(), &GraphNode::id);
+    bool confirmed = node == snapshot_->nodes.end() || !node->audio;
+    if (!confirmed && it->volume)
+      confirmed = std::abs(node->audio->volume - *it->volume) <= 0.002F;
+    if (!confirmed && it->muted) confirmed = node->audio->muted == *it->muted;
+    if (it->volume && it->muted && node != snapshot_->nodes.end() && node->audio)
+      confirmed = std::abs(node->audio->volume - *it->volume) <= 0.002F && node->audio->muted == *it->muted;
+    if (confirmed) it = pendingAudio_.erase(it); else ++it;
+  }
+  if (pendingAudio_.isEmpty()) audioTimer_.stop();
 }
 
 void GraphController::completePending(const GraphLink &observed) {
@@ -675,6 +745,63 @@ void GraphController::disconnectSelected() {
   const auto *link = findLink(*snapshot_, id);
   if (!link) { setNotice(QStringLiteral("The selected link no longer exists.")); return; }
   submitDestroy(*link);
+}
+
+void GraphController::setNodeVolume(quint32 nodeId, double percent) {
+  if (!snapshot_) return;
+  const auto node = std::ranges::find(snapshot_->nodes, static_cast<GlobalId>(nodeId), &GraphNode::id);
+  if (node == snapshot_->nodes.end() || !node->audio || !node->audio->hasVolume) {
+    setNotice(QStringLiteral("This node does not expose a master volume control."));
+    return;
+  }
+  if (!node->audio->writable) {
+    setNotice(QStringLiteral("PipeWire does not allow this volume to be changed."));
+    return;
+  }
+  const auto minimum = volumeToPercent(node->audio->minimumVolume);
+  const auto maximum = volumeToPercent(node->audio->maximumVolume);
+  const auto requested = static_cast<float>(percentToVolume(std::clamp(percent, minimum, maximum)));
+  SetNodeAudioRequest request{.commandId = nextCommandId_++, .snapshotRevision = snapshot_->revision,
+    .nodeId = static_cast<GlobalId>(nodeId), .volume = std::nullopt, .channelVolumes = {}, .muted = std::nullopt};
+  if (node->audio->channelVolumes.empty()) {
+    request.volume = requested;
+  } else {
+    const auto current = node->audio->volume;
+    request.channelVolumes.reserve(node->audio->channelVolumes.size());
+    for (const auto channel : node->audio->channelVolumes)
+      request.channelVolumes.push_back(current > 0.000001F ? channel * requested / current : requested);
+  }
+  pendingAudio_.insert(nodeId, PendingAudio{request.commandId, requested, std::nullopt,
+    QDateTime::currentMSecsSinceEpoch() + 4000});
+  if (!audioTimer_.isActive()) audioTimer_.start();
+  source_->setNodeAudio(std::move(request), [this, nodeId](CommandResult result) {
+    QMetaObject::invokeMethod(this, [this, nodeId, result = std::move(result)] {
+      applyAudioResult(nodeId, result);
+    }, Qt::QueuedConnection);
+  });
+}
+
+void GraphController::setNodeMuted(quint32 nodeId, bool muted) {
+  if (!snapshot_) return;
+  const auto node = std::ranges::find(snapshot_->nodes, static_cast<GlobalId>(nodeId), &GraphNode::id);
+  if (node == snapshot_->nodes.end() || !node->audio || !node->audio->hasMute) {
+    setNotice(QStringLiteral("This node does not expose a mute control."));
+    return;
+  }
+  if (!node->audio->writable) {
+    setNotice(QStringLiteral("PipeWire does not allow this mute control to be changed."));
+    return;
+  }
+  SetNodeAudioRequest request{.commandId = nextCommandId_++, .snapshotRevision = snapshot_->revision,
+    .nodeId = static_cast<GlobalId>(nodeId), .volume = std::nullopt, .channelVolumes = {}, .muted = muted};
+  pendingAudio_.insert(nodeId, PendingAudio{request.commandId, std::nullopt, muted,
+    QDateTime::currentMSecsSinceEpoch() + 4000});
+  if (!audioTimer_.isActive()) audioTimer_.start();
+  source_->setNodeAudio(std::move(request), [this, nodeId](CommandResult result) {
+    QMetaObject::invokeMethod(this, [this, nodeId, result = std::move(result)] {
+      applyAudioResult(nodeId, result);
+    }, Qt::QueuedConnection);
+  });
 }
 
 void GraphController::undo() {

@@ -516,6 +516,7 @@ WireRunner's differentiator is the combination of a faithful multimedia graph, v
 - **0.2:** Composed live graph with stable layout, grouped and exact ports, search, focus, filtering, pan, and zoom.
 - **0.3:** Live port-to-port link creation, individual link removal, lingered manual links, feedback-link confirmation, snapshot-confirmed commands, and bounded session undo and redo.
 - **0.3.1:** Clear graph text under fractional display scaling, larger socket targets, and unambiguous wire and card drag gestures.
+- **0.4:** Snapshot-confirmed master volume and mute controls for each audio node in the selected-object inspector.
 
-Volume and mute controls, virtual object creation, remembered routing policy,
-and persistent scenes remain subsequent milestones.
+Live meters, channel controls, defaults, profiles, virtual object creation,
+remembered routing policy, and persistent scenes remain subsequent milestones.

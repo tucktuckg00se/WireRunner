@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cmath>
 #include <deque>
 #include <map>
 #include <set>
@@ -45,6 +46,19 @@ std::string_view nodeRoleName(NodeRole role) {
   case NodeRole::Destination: return "destination";
   }
   return "processor";
+}
+
+double volumeToPercent(double linearGain) {
+  return linearGain <= 0.0 ? 0.0 : std::cbrt(linearGain) * 100.0;
+}
+
+double percentToVolume(double percent) {
+  const auto normalized = std::max(0.0, percent) / 100.0;
+  return normalized * normalized * normalized;
+}
+
+double volumeToDecibels(double linearGain) {
+  return linearGain <= 0.0 ? -INFINITY : 20.0 * std::log10(linearGain);
 }
 
 std::string stableNodeKey(const GraphSnapshot &snapshot, const GraphNode &node) {

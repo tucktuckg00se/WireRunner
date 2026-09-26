@@ -19,6 +19,17 @@ enum class NodeRole { Source, Processor, Destination };
 struct GraphClient { GlobalId id{}; std::string name; std::string stableId; };
 struct GraphDevice { GlobalId id{}; std::string name; std::string stableId; std::string mediaClass; };
 
+struct NodeAudioControl {
+  float volume{1.0F};
+  std::vector<float> channelVolumes;
+  float minimumVolume{};
+  float maximumVolume{1.0F};
+  bool muted{};
+  bool hasVolume{};
+  bool hasMute{};
+  bool writable{};
+};
+
 struct GraphNode {
   GlobalId id{};
   std::string name;
@@ -30,6 +41,7 @@ struct GraphNode {
   NodeRole role{NodeRole::Processor};
   std::optional<GlobalId> clientId;
   std::optional<GlobalId> deviceId;
+  std::optional<NodeAudioControl> audio;
 };
 
 struct GraphPort {
@@ -71,6 +83,9 @@ struct GraphSnapshot {
 MediaType classifyMedia(std::string_view mediaClass, std::string_view format = {});
 std::string_view mediaTypeName(MediaType type);
 std::string_view nodeRoleName(NodeRole role);
+double volumeToPercent(double linearGain);
+double percentToVolume(double percent);
+double volumeToDecibels(double linearGain);
 
 struct GraphCard {
   std::string key;

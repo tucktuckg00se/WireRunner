@@ -9,6 +9,7 @@
 #include <QFile>
 #include <QTemporaryDir>
 #include <QtTest>
+#include <cmath>
 
 using namespace wirerunner;
 
@@ -27,6 +28,9 @@ public:
   void destroyLink(DestroyLinkRequest request, CommandCallback callback) override {
     lastDestroy = request; command_ = std::move(callback);
   }
+  void setNodeAudio(SetNodeAudioRequest request, CommandCallback callback) override {
+    lastAudio = std::move(request); audioCommand_ = std::move(callback);
+  }
   void respond(bool accepted, std::string message = {}) {
     QVERIFY(command_);
     const auto id = lastCreate.commandId != 0 && lastCreate.commandId >= lastDestroy.commandId
@@ -34,12 +38,19 @@ public:
     auto callback = std::move(command_);
     callback({id, accepted, std::move(message)});
   }
+  void respondAudio(bool accepted, std::string message = {}) {
+    QVERIFY(audioCommand_);
+    auto callback = std::move(audioCommand_);
+    callback({lastAudio.commandId, accepted, std::move(message)});
+  }
   CreateLinkRequest lastCreate;
   DestroyLinkRequest lastDestroy;
+  SetNodeAudioRequest lastAudio;
 private:
   SnapshotCallback snapshot_;
   StatusCallback status_;
   CommandCallback command_;
+  CommandCallback audioCommand_;
 };
 
 class GraphTests final : public QObject {
@@ -53,18 +64,26 @@ private slots:
     QCOMPARE(classifyMedia("Stream/Input/Unknown", "8 bit raw video"), MediaType::Video);
   }
 
+  void convertsPipeWireVolumeForPeople() {
+    QCOMPARE(volumeToPercent(1.0), 100.0);
+    QCOMPARE(volumeToPercent(0.125), 50.0);
+    QCOMPARE(percentToVolume(50.0), 0.125);
+    QVERIFY(std::abs(volumeToDecibels(0.5) - (-6.0205999)) < 0.0001);
+    QVERIFY(std::isinf(volumeToDecibels(0.0)));
+  }
+
   void assignsRolesAndLanes() {
     GraphSnapshot graph;
     graph.nodes = {
       {.id = 1, .name = "Mic", .technicalName = {}, .stableId = {}, .mediaClass = {},
         .state = {}, .media = MediaType::Unknown, .role = NodeRole::Processor,
-        .clientId = std::nullopt, .deviceId = std::nullopt},
+        .clientId = std::nullopt, .deviceId = std::nullopt, .audio = std::nullopt},
       {.id = 2, .name = "Filter", .technicalName = {}, .stableId = {}, .mediaClass = {},
         .state = {}, .media = MediaType::Unknown, .role = NodeRole::Processor,
-        .clientId = std::nullopt, .deviceId = std::nullopt},
+        .clientId = std::nullopt, .deviceId = std::nullopt, .audio = std::nullopt},
       {.id = 3, .name = "Speakers", .technicalName = {}, .stableId = {}, .mediaClass = {},
         .state = {}, .media = MediaType::Unknown, .role = NodeRole::Processor,
-        .clientId = std::nullopt, .deviceId = std::nullopt},
+        .clientId = std::nullopt, .deviceId = std::nullopt, .audio = std::nullopt},
     };
     graph.ports = {
       {11, 1, "out", {}, PortDirection::Output},
@@ -142,9 +161,9 @@ private slots:
   void validatesRoutesAndDetectsCycles() {
     GraphSnapshot graph;
     graph.nodes = {
-      {1, "", "", "", "", "", MediaType::Audio, NodeRole::Processor, std::nullopt, std::nullopt},
-      {2, "", "", "", "", "", MediaType::Audio, NodeRole::Processor, std::nullopt, std::nullopt},
-      {3, "", "", "", "", "", MediaType::Video, NodeRole::Processor, std::nullopt, std::nullopt}
+      {1, "", "", "", "", "", MediaType::Audio, NodeRole::Processor, std::nullopt, std::nullopt, std::nullopt},
+      {2, "", "", "", "", "", MediaType::Audio, NodeRole::Processor, std::nullopt, std::nullopt, std::nullopt},
+      {3, "", "", "", "", "", MediaType::Video, NodeRole::Processor, std::nullopt, std::nullopt, std::nullopt}
     };
     graph.ports = {
       {11, 1, "", "", PortDirection::Output, MediaType::Audio, "", 0},
@@ -175,8 +194,8 @@ private slots:
     graph.revision = 1;
     graph.remoteName = "pipewire-0";
     graph.nodes = {
-      {1, "Source", "", "source", "", "", MediaType::Audio, NodeRole::Processor, std::nullopt, std::nullopt},
-      {2, "Sink", "", "sink", "", "", MediaType::Audio, NodeRole::Processor, std::nullopt, std::nullopt}
+      {1, "Source", "", "source", "", "", MediaType::Audio, NodeRole::Processor, std::nullopt, std::nullopt, std::nullopt},
+      {2, "Sink", "", "sink", "", "", MediaType::Audio, NodeRole::Processor, std::nullopt, std::nullopt, std::nullopt}
     };
     graph.ports = {
       {11, 1, "out", "", PortDirection::Output, MediaType::Audio, "", 0},
@@ -215,8 +234,8 @@ private slots:
     graph.revision = 1;
     graph.remoteName = "pipewire-0";
     graph.nodes = {
-      {1, "First", "", "first", "", "", MediaType::Audio, NodeRole::Processor, std::nullopt, std::nullopt},
-      {2, "Second", "", "second", "", "", MediaType::Audio, NodeRole::Processor, std::nullopt, std::nullopt}
+      {1, "First", "", "first", "", "", MediaType::Audio, NodeRole::Processor, std::nullopt, std::nullopt, std::nullopt},
+      {2, "Second", "", "second", "", "", MediaType::Audio, NodeRole::Processor, std::nullopt, std::nullopt, std::nullopt}
     };
     graph.ports = {
       {11, 1, "out", "", PortDirection::Output, MediaType::Audio, "", 0100},
@@ -236,6 +255,54 @@ private slots:
     QVERIFY(backend->lastCreate.feedback);
   }
 
+  void controlsEachAudioNodeInAGroupedCard() {
+    QTemporaryDir directory;
+    auto source = std::make_unique<ControllableGraphSource>();
+    auto *backend = source.get();
+    GraphController controller(std::move(source), directory.filePath("layout.json"));
+    controller.start();
+    GraphSnapshot graph;
+    graph.revision = 1;
+    graph.remoteName = "pipewire-0";
+    graph.clients = {{7, "Browser", "org.browser"}};
+    graph.nodes = {
+      {.id = 1, .name = "Music tab", .technicalName = "music", .stableId = "music",
+        .mediaClass = "Stream/Output/Audio", .state = "running", .media = MediaType::Audio,
+        .role = NodeRole::Source, .clientId = 7, .deviceId = std::nullopt,
+        .audio = NodeAudioControl{.volume = 0.729F, .channelVolumes = {0.729F, 0.3645F},
+          .minimumVolume = 0.0F, .maximumVolume = 1.5F, .muted = false,
+          .hasVolume = true, .hasMute = true, .writable = true}},
+      {.id = 2, .name = "Meeting tab", .technicalName = "meeting", .stableId = "meeting",
+        .mediaClass = "Stream/Output/Audio", .state = "running", .media = MediaType::Audio,
+        .role = NodeRole::Source, .clientId = 7, .deviceId = std::nullopt,
+        .audio = NodeAudioControl{.volume = 1.0F, .channelVolumes = {}, .minimumVolume = 0.0F, .maximumVolume = 1.0F,
+          .muted = false, .hasVolume = true, .hasMute = true, .writable = true}}
+    };
+    backend->publish(graph);
+    controller.selectCard(QStringLiteral("client:org.browser"));
+    QCOMPARE(controller.selected().value("audioControls").toList().size(), 2);
+
+    controller.setNodeVolume(1, 50.0);
+    QCOMPARE(backend->lastAudio.nodeId, GlobalId{1});
+    QVERIFY(!backend->lastAudio.volume.has_value());
+    QCOMPARE(backend->lastAudio.channelVolumes.size(), std::size_t{2});
+    QVERIFY(std::abs(backend->lastAudio.channelVolumes[0] - 0.125F) < 0.0001F);
+    QVERIFY(std::abs(backend->lastAudio.channelVolumes[1] - 0.0625F) < 0.0001F);
+    backend->respondAudio(true, "accepted");
+    graph.revision = 2;
+    graph.nodes[0].audio->volume = 0.125F;
+    graph.nodes[0].audio->channelVolumes = {0.125F, 0.0625F};
+    backend->publish(graph);
+    QTRY_COMPARE(controller.selected().value("audioControls").toList().at(0).toMap().value("volume").toInt(), 50);
+
+    controller.setNodeMuted(2, true);
+    QCOMPARE(backend->lastAudio.nodeId, GlobalId{2});
+    QCOMPARE(backend->lastAudio.muted, std::optional<bool>{true});
+    backend->respondAudio(false, "denied");
+    QTRY_VERIFY(controller.noticeText().contains(QStringLiteral("denied")));
+    QCOMPARE(controller.selected().value("audioControls").toList().at(1).toMap().value("muted").toBool(), false);
+  }
+
   void reportsPolicyRestoredRoutesWithoutFightingThem() {
     QTemporaryDir directory;
     auto source = std::make_unique<ControllableGraphSource>();
@@ -246,8 +313,8 @@ private slots:
     graph.revision = 1;
     graph.remoteName = "pipewire-0";
     graph.nodes = {
-      {1, "Source", "", "source", "", "", MediaType::Audio, NodeRole::Processor, std::nullopt, std::nullopt},
-      {2, "Sink", "", "sink", "", "", MediaType::Audio, NodeRole::Processor, std::nullopt, std::nullopt}
+      {1, "Source", "", "source", "", "", MediaType::Audio, NodeRole::Processor, std::nullopt, std::nullopt, std::nullopt},
+      {2, "Sink", "", "sink", "", "", MediaType::Audio, NodeRole::Processor, std::nullopt, std::nullopt, std::nullopt}
     };
     graph.ports = {
       {11, 1, "out", "", PortDirection::Output, MediaType::Audio, "", 0100},
@@ -346,7 +413,8 @@ private slots:
       for (const auto &[id, stable] : identities) {
         graph.nodes.push_back({.id = id, .name = "Node " + stable, .technicalName = "node." + stable,
           .stableId = stable, .mediaClass = "Audio/Node", .state = "running", .media = MediaType::Audio,
-          .role = NodeRole::Processor, .clientId = std::nullopt, .deviceId = std::nullopt});
+          .role = NodeRole::Processor, .clientId = std::nullopt, .deviceId = std::nullopt,
+          .audio = std::nullopt});
       }
       return graph;
     };
@@ -382,7 +450,8 @@ private slots:
       graph.nodes.push_back({.id = index, .name = "Node " + std::to_string(index),
         .technicalName = "node." + std::to_string(index), .stableId = "stable." + std::to_string(index),
         .mediaClass = "Audio/Node", .state = "running", .media = MediaType::Audio,
-        .role = NodeRole::Processor, .clientId = std::nullopt, .deviceId = std::nullopt});
+        .role = NodeRole::Processor, .clientId = std::nullopt, .deviceId = std::nullopt,
+        .audio = std::nullopt});
       graph.ports.push_back({index * 10, index, "input", "FL", PortDirection::Input, MediaType::Audio});
       graph.ports.push_back({index * 10 + 1, index, "output", "FL", PortDirection::Output, MediaType::Audio});
     }

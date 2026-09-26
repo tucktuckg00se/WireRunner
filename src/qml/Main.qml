@@ -261,6 +261,8 @@ ApplicationWindow {
                 onClearFocusRequested: graph.clearFocus()
                 onToggleRequested: key => graph.toggleCard(key)
                 onDisconnectRequested: graph.disconnectSelected()
+                onVolumeRequested: (nodeId, percent) => graph.setNodeVolume(nodeId, percent)
+                onMuteRequested: (nodeId, muted) => graph.setNodeMuted(nodeId, muted)
             }
         }
     }

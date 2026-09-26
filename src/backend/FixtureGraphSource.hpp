@@ -11,6 +11,7 @@ public:
   void stop() override {}
   void createLink(CreateLinkRequest request, CommandCallback callback) override;
   void destroyLink(DestroyLinkRequest request, CommandCallback callback) override;
+  void setNodeAudio(SetNodeAudioRequest request, CommandCallback callback) override;
   static GraphSnapshot load(const QString &path);
 private:
   QString path_;

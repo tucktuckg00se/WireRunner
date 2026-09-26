@@ -5,7 +5,9 @@
 
 #include <functional>
 #include <memory>
+#include <optional>
 #include <string>
+#include <vector>
 #include <cstdint>
 
 namespace wirerunner {
@@ -32,6 +34,15 @@ struct DestroyLinkRequest {
   GlobalId linkId{};
 };
 
+struct SetNodeAudioRequest {
+  CommandId commandId{};
+  std::uint64_t snapshotRevision{};
+  GlobalId nodeId{};
+  std::optional<float> volume;
+  std::vector<float> channelVolumes;
+  std::optional<bool> muted;
+};
+
 struct CommandResult {
   CommandId commandId{};
   bool accepted{};
@@ -48,6 +59,7 @@ public:
   virtual void stop() = 0;
   virtual void createLink(CreateLinkRequest request, CommandCallback callback) = 0;
   virtual void destroyLink(DestroyLinkRequest request, CommandCallback callback) = 0;
+  virtual void setNodeAudio(SetNodeAudioRequest request, CommandCallback callback) = 0;
 };
 
 } // namespace wirerunner

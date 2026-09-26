@@ -19,6 +19,7 @@ public:
   void stop() override;
   void createLink(CreateLinkRequest request, CommandCallback callback) override;
   void destroyLink(DestroyLinkRequest request, CommandCallback callback) override;
+  void setNodeAudio(SetNodeAudioRequest request, CommandCallback callback) override;
 
 private:
   void run(std::stop_token token);

@@ -4,8 +4,8 @@ WireRunner is a native PipeWire and WirePlumber control surface for Linux. It
 presents the real multimedia graph as one understandable workspace for audio,
 video, and MIDI.
 
-The current milestone is a live routing workspace built with C++23 and Qt Quick
-6.
+The current milestone is a live routing and audio-control workspace built with
+C++23 and Qt Quick 6.
 
 WireRunner reads clients, devices, nodes, ports, and links directly from
 libwireplumber on a dedicated GLib thread. It composes related objects into one
@@ -15,6 +15,9 @@ state. Drag an exact output port to an input port to add a route without
 replacing existing links. Selected wires can be disconnected individually, and
 successful routing changes support session-local undo and redo. Probable cycles
 require explicit confirmation and are created as PipeWire feedback links.
+Selecting an audio object exposes one master volume and mute control for each
+real audio node it contains. Changes are submitted through libwireplumber and
+reconciled with the observed PipeWire state.
 
 The demonstration graph remains read-only. Live mutations use libwireplumber's
 link factory on the dedicated GLib backend thread and are considered complete
